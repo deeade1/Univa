@@ -22,23 +22,14 @@ Architecture:
 
 from __future__ import annotations
 
-import os
 from threading import Lock
 
 import cv2
-from django.conf import settings
 from graphql import GraphQLError
 from insightface.app import FaceAnalysis
 
 
 MODEL_NAME = "buffalo_l"
-
-MODEL_DIR = os.path.join(
-    settings.BASE_DIR,
-    "assets",
-    "insightface",
-    MODEL_NAME,
-)
 
 
 class ArcFaceModel:
@@ -80,7 +71,6 @@ class ArcFaceModel:
 
             cls._app = FaceAnalysis(
                 name=MODEL_NAME,
-                root=MODEL_DIR,
                 providers=providers,
             )
 

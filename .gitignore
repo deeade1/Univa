@@ -1,27 +1,52 @@
 # ======================
-# 🔥 Secrets & Credentials
+# Secrets & Credentials
 # ======================
 .env
-.env.*            # covers .env.local, .env.prod, etc.
+.env.*
+!.env.example
 *.pem
 *.key
 *.crt
 *.p12
 *.jks
+*firebase-adminsdk*.json
+*service-account*.json
 
-# Firebase / service account JSONs
-*.json
-
-# But still allow package files
-!package.json
-!tsconfig.json
-!*.config.json
-
+# ======================
+# Python
+# ======================
 __pycache__/
 *.py[cod]
 *.pyo
+*.so
+*.egg-info/
+.venv/
+.venv*/
+venv/
+env/
+ENV/
 
-# Hidden build/cache/tool dirs
+# ======================
+# Node
+# ======================
+node_modules/
+.expo/
+.expo-shared/
+.next/
+
+# ======================
+# Build artifacts
+# ======================
+build/
+dist/
+staticfiles/
+media/
+
+# ======================
+# Local DB / cache
+# ======================
+db.sqlite3
+*.sqlite3
 .cache/
 .keras/
 .local/
@@ -29,63 +54,32 @@ __pycache__/
 .bash_history
 .python_history
 
-# Environment files
-.env
-.env.*
-.env.prod.db
-!.env.example
-
-# Virtual environments (all forms)
-.venv/
-.venv*/
-venv/
-env/
-ENV/
-
-# Node
-node_modules/
-.expo/
-.expo-shared/
-.next/
-
-# Python
-__pycache__/
-*.py[cod]
-*.so
-*.egg-info/
-build/
-dist/
-
-# IDE
-.idea/
-.vscode/
-*.swp
-.claude/
-# Django collectstatic output (regenerable)
-staticfiles/
-media/
-
-# Local DB and cache artifacts
-db.sqlite3
-*.sqlite3
-
-# Django collectstatic output (regenerable)
-staticfiles/
-media/
-
-# Local DB and cache artifacts
-db.sqlite3
-*.sqlite3
-
-# Media test artifacts
+# ======================
+# Test media
+# ======================
 apps/backend/media/chat/files/test*
 apps/backend/media/chat/images/test*
 apps/backend/media/qrcodes/*.png
 apps/backend/media/face*
 apps/backend/media/profile_pics/t-shirt.jpeg
 
+# ======================
 # Scraped docs
+# ======================
 apps/frontend/src/assets/images/Add navigation - Expo Documentation*
 
-# InsightFace model weights (download at build/setup time, do not commit)
+# ======================
+# ML model weights
+# ======================
 apps/backend/assets/insightface/
+
+# ======================
+# IDE
+# ======================
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+.claude/
+# Backend env / secrets
+apps/backend/vars.json

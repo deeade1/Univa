@@ -1,6 +1,5 @@
-import React from 'react';
-import univa from '@/assets/images/univa.png';
-
+import React from 'react'; 
+import univa from '@/assets/images/univa.webp';
 interface LogoProps {
   color?: boolean;
   className?: string; // Optional className prop
