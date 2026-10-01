@@ -1,0 +1,2839 @@
+type Query {
+  user(
+    """The ID of the object"""
+    id: ID!
+  ): UserNode
+  userProfile(userId: ID): UserProfileNode
+  allUsers(offset: Int, before: String, after: String, first: Int, last: Int, search: String): UserNodeConnection
+  allAddresses(
+    offset: Int
+    before: String
+    after: String
+    first: Int
+    last: Int
+    city: String
+    city_Icontains: String
+    country: AccountsAddressCountryChoices
+    addressType: AccountsAddressAddressTypeChoices
+    isDefault: Boolean
+
+    """User"""
+    user: ID
+
+    """Users with addresses"""
+    userAddresses: ID
+
+    """Ordering"""
+    orderBy: String
+  ): AddressNodeConnection
+  allRoles(offset: Int, before: String, after: String, first: Int, last: Int, name: String, name_Icontains: String, appName: AccountsRoleAppNameChoices, isDefault: Boolean, requiresVerification: Boolean): RoleNodeConnection
+  userRoles(offset: Int, before: String, after: String, first: Int, last: Int, isActive: Boolean, role_Name: String, role_Name_Icontains: String, role_AppName: AccountsRoleAppNameChoices, createdAt: DateTime, createdAt_Year_Gt: DateTime, createdAt_Year_Lt: DateTime, expiresAt: DateTime, expiresAt_Isnull: Boolean, expiresAt_Gte: DateTime, expiresAt_Lte: DateTime, revokedAt: DateTime, revokedAt_Isnull: Boolean): UserRoleNodeConnection
+  profileImages(offset: Int, before: String, after: String, first: Int, last: Int, isVerified: Boolean, faceDetected: Boolean, faceCount: Int, faceCount_Gte: Int, faceCount_Lte: Int, createdAt: DateTime, createdAt_Year_Gt: DateTime, createdAt_Year_Lt: DateTime): UserProfileImageNodeConnection
+  faceEncodings(offset: Int, before: String, after: String, first: Int, last: Int, isActive: Boolean, version: String, createdAt: DateTime, createdAt_Year_Gt: DateTime, createdAt_Year_Lt: DateTime): FaceEncodingNodeConnection
+  faceVerification: FaceVerificationNode
+  paginatedRoles(page: Int = 1, pageSize: Int = 20): RolePaginationType
+  statesByCountry(countryCode: String!): [StateType]
+  loyaltyHistory(userId: ID!, offset: Int, before: String, after: String, first: Int, last: Int, reward: String, reward_Icontains: String, dateRedeemed: DateTime, dateRedeemed_Year_Gt: DateTime, dateRedeemed_Year_Lt: DateTime, user_Email_Icontains: String): LoyaltyHistoryNodeConnection
+  loyaltyRewardTiers(offset: Int, before: String, after: String, first: Int, last: Int, pointsNeeded: Int, pointsNeeded_Gte: Int, pointsNeeded_Lte: Int, reward: String, reward_Icontains: String, description_Icontains: String, active: Boolean): LoyaltyRewardTierNodeConnection
+  allRewards(offset: Int, before: String, after: String, first: Int, last: Int, pointsNeeded: Int, pointsNeeded_Gte: Int, pointsNeeded_Lte: Int, reward: String, reward_Icontains: String, description_Icontains: String, active: Boolean): LoyaltyRewardTierNodeConnection
+  nextAvailableReward: NextAvailableRewardType
+}
+
+type UserNode implements Node {
+  """The ID of the object"""
+  id: ID!
+  firstName: String!
+  lastName: String!
+
+  """
+  Designates whether this user should be treated as active. Unselect this instead of deleting accounts.
+  """
+  isActive: Boolean!
+  dateJoined: DateTime!
+  email: String
+  phoneNumber: String
+  contact: String
+  roles: [UserRoleNode]
+  avatarUrl: String
+  auditRoles: [UserRoleNode]
+  activeRoles: [UserRoleNode]
+  expiredRoles: [UserRoleNode]
+  revokedRoles: [UserRoleNode]
+}
+
+"""An object with an ID"""
+interface Node {
+  """The ID of the object"""
+  id: ID!
+}
+
+"""
+The `DateTime` scalar type represents a DateTime
+value as specified by
+[iso8601](https://en.wikipedia.org/wiki/ISO_8601).
+"""
+scalar DateTime
+
+type UserRoleNode implements Node {
+  """The ID of the object"""
+  id: ID!
+  user: UserNode!
+  role: RoleNode!
+  isActive: Boolean!
+  createdAt: DateTime!
+  createdBy: UserNode
+  verifiedAt: DateTime
+  verifiedBy: UserNode
+  notes: String!
+  expiresAt: DateTime
+  revokedAt: DateTime
+  revokedBy: UserNode
+}
+
+type RoleNode implements Node {
+  """The ID of the object"""
+  id: ID!
+  name: String!
+  appName: AccountsRoleAppNameChoices!
+  description: String!
+  isDefault: Boolean!
+  requiresVerification: Boolean!
+  userAssignments(offset: Int, before: String, after: String, first: Int, last: Int, isActive: Boolean, role_Name: String, role_Name_Icontains: String, role_AppName: AccountsRoleAppNameChoices, createdAt: DateTime, createdAt_Year_Gt: DateTime, createdAt_Year_Lt: DateTime, expiresAt: DateTime, expiresAt_Isnull: Boolean, expiresAt_Gte: DateTime, expiresAt_Lte: DateTime, revokedAt: DateTime, revokedAt_Isnull: Boolean): UserRoleNodeConnection!
+
+  """Roles that can see this address"""
+  addressSet(offset: Int, before: String, after: String, first: Int, last: Int, city: String, city_Icontains: String, user_Email: String): AddressNodeConnection!
+}
+
+"""An enumeration."""
+enum AccountsRoleAppNameChoices {
+  """Transport Service"""
+  TRANSPORT
+
+  """E-Commerce"""
+  ECOMMERCE
+
+  """Real Estate"""
+  REALESTATE
+
+  """Community"""
+  COMMUNITY
+}
+
+type UserRoleNodeConnection {
+  """Pagination data for this connection."""
+  pageInfo: PageInfo!
+
+  """Contains the nodes in this connection."""
+  edges: [UserRoleNodeEdge]!
+}
+
+"""
+The Relay compliant `PageInfo` type, containing data necessary to paginate this connection.
+"""
+type PageInfo {
+  """When paginating forwards, are there more items?"""
+  hasNextPage: Boolean!
+
+  """When paginating backwards, are there more items?"""
+  hasPreviousPage: Boolean!
+
+  """When paginating backwards, the cursor to continue."""
+  startCursor: String
+
+  """When paginating forwards, the cursor to continue."""
+  endCursor: String
+}
+
+"""A Relay edge containing a `UserRoleNode` and its cursor."""
+type UserRoleNodeEdge {
+  """The item at the end of the edge"""
+  node: UserRoleNode
+
+  """A cursor for use in pagination"""
+  cursor: String!
+}
+
+type AddressNodeConnection {
+  """Pagination data for this connection."""
+  pageInfo: PageInfo!
+
+  """Contains the nodes in this connection."""
+  edges: [AddressNodeEdge]!
+}
+
+"""A Relay edge containing a `AddressNode` and its cursor."""
+type AddressNodeEdge {
+  """The item at the end of the edge"""
+  node: AddressNode
+
+  """A cursor for use in pagination"""
+  cursor: String!
+}
+
+type AddressNode implements Node {
+  """The ID of the object"""
+  id: ID!
+  user: UserNode!
+  addressType: AccountsAddressAddressTypeChoices!
+
+  """Default address for this type"""
+  isDefault: Boolean!
+  city: String!
+  postalCode: String!
+  state: String!
+  country: AccountsAddressCountryChoices!
+  createdAt: DateTime!
+  updatedAt: DateTime!
+  stateName: String
+  countryName: String
+  addressTypeDisplay: String
+}
+
+"""An enumeration."""
+enum AccountsAddressAddressTypeChoices {
+  """Home"""
+  HOME
+
+  """Work"""
+  WORK
+
+  """Billing"""
+  BILLING
+
+  """Shipping"""
+  SHIPPING
+
+  """Other"""
+  OTHER
+}
+
+"""An enumeration."""
+enum AccountsAddressCountryChoices {
+  """Afghanistan"""
+  AF
+
+  """Åland Islands"""
+  AX
+
+  """Albania"""
+  AL
+
+  """Algeria"""
+  DZ
+
+  """American Samoa"""
+  AS
+
+  """Andorra"""
+  AD
+
+  """Angola"""
+  AO
+
+  """Anguilla"""
+  AI
+
+  """Antarctica"""
+  AQ
+
+  """Antigua and Barbuda"""
+  AG
+
+  """Argentina"""
+  AR
+
+  """Armenia"""
+  AM
+
+  """Aruba"""
+  AW
+
+  """Australia"""
+  AU
+
+  """Austria"""
+  AT
+
+  """Azerbaijan"""
+  AZ
+
+  """Bahamas"""
+  BS
+
+  """Bahrain"""
+  BH
+
+  """Bangladesh"""
+  BD
+
+  """Barbados"""
+  BB
+
+  """Belarus"""
+  BY
+
+  """Belgium"""
+  BE
+
+  """Belize"""
+  BZ
+
+  """Benin"""
+  BJ
+
+  """Bermuda"""
+  BM
+
+  """Bhutan"""
+  BT
+
+  """Bolivia"""
+  BO
+
+  """Bonaire, Sint Eustatius and Saba"""
+  BQ
+
+  """Bosnia and Herzegovina"""
+  BA
+
+  """Botswana"""
+  BW
+
+  """Bouvet Island"""
+  BV
+
+  """Brazil"""
+  BR
+
+  """British Indian Ocean Territory"""
+  IO
+
+  """Brunei"""
+  BN
+
+  """Bulgaria"""
+  BG
+
+  """Burkina Faso"""
+  BF
+
+  """Burundi"""
+  BI
+
+  """Cabo Verde"""
+  CV
+
+  """Cambodia"""
+  KH
+
+  """Cameroon"""
+  CM
+
+  """Canada"""
+  CA
+
+  """Cayman Islands"""
+  KY
+
+  """Central African Republic"""
+  CF
+
+  """Chad"""
+  TD
+
+  """Chile"""
+  CL
+
+  """China"""
+  CN
+
+  """Christmas Island"""
+  CX
+
+  """Cocos (Keeling) Islands"""
+  CC
+
+  """Colombia"""
+  CO
+
+  """Comoros"""
+  KM
+
+  """Congo"""
+  CG
+
+  """Congo (the Democratic Republic of the)"""
+  CD
+
+  """Cook Islands"""
+  CK
+
+  """Costa Rica"""
+  CR
+
+  """Côte d'Ivoire"""
+  CI
+
+  """Croatia"""
+  HR
+
+  """Cuba"""
+  CU
+
+  """Curaçao"""
+  CW
+
+  """Cyprus"""
+  CY
+
+  """Czechia"""
+  CZ
+
+  """Denmark"""
+  DK
+
+  """Djibouti"""
+  DJ
+
+  """Dominica"""
+  DM
+
+  """Dominican Republic"""
+  DO
+
+  """Ecuador"""
+  EC
+
+  """Egypt"""
+  EG
+
+  """El Salvador"""
+  SV
+
+  """Equatorial Guinea"""
+  GQ
+
+  """Eritrea"""
+  ER
+
+  """Estonia"""
+  EE
+
+  """Eswatini"""
+  SZ
+
+  """Ethiopia"""
+  ET
+
+  """European Union"""
+  EU
+
+  """Falkland Islands (Malvinas)"""
+  FK
+
+  """Faroe Islands"""
+  FO
+
+  """Fiji"""
+  FJ
+
+  """Finland"""
+  FI
+
+  """France"""
+  FR
+
+  """French Guiana"""
+  GF
+
+  """French Polynesia"""
+  PF
+
+  """French Southern Territories"""
+  TF
+
+  """Gabon"""
+  GA
+
+  """Gambia"""
+  GM
+
+  """Georgia"""
+  GE
+
+  """Germany"""
+  DE
+
+  """Ghana"""
+  GH
+
+  """Gibraltar"""
+  GI
+
+  """Greece"""
+  GR
+
+  """Greenland"""
+  GL
+
+  """Grenada"""
+  GD
+
+  """Guadeloupe"""
+  GP
+
+  """Guam"""
+  GU
+
+  """Guatemala"""
+  GT
+
+  """Guernsey"""
+  GG
+
+  """Guinea"""
+  GN
+
+  """Guinea-Bissau"""
+  GW
+
+  """Guyana"""
+  GY
+
+  """Haiti"""
+  HT
+
+  """Heard Island and McDonald Islands"""
+  HM
+
+  """Holy See"""
+  VA
+
+  """Honduras"""
+  HN
+
+  """Hong Kong"""
+  HK
+
+  """Hungary"""
+  HU
+
+  """Iceland"""
+  IS
+
+  """India"""
+  IN
+
+  """Indonesia"""
+  ID
+
+  """Iran"""
+  IR
+
+  """Iraq"""
+  IQ
+
+  """Ireland"""
+  IE
+
+  """Isle of Man"""
+  IM
+
+  """Israel"""
+  IL
+
+  """Italy"""
+  IT
+
+  """Jamaica"""
+  JM
+
+  """Japan"""
+  JP
+
+  """Jersey"""
+  JE
+
+  """Jordan"""
+  JO
+
+  """Kazakhstan"""
+  KZ
+
+  """Kenya"""
+  KE
+
+  """Kiribati"""
+  KI
+
+  """Kuwait"""
+  KW
+
+  """Kyrgyzstan"""
+  KG
+
+  """Laos"""
+  LA
+
+  """Latvia"""
+  LV
+
+  """Lebanon"""
+  LB
+
+  """Lesotho"""
+  LS
+
+  """Liberia"""
+  LR
+
+  """Libya"""
+  LY
+
+  """Liechtenstein"""
+  LI
+
+  """Lithuania"""
+  LT
+
+  """Luxembourg"""
+  LU
+
+  """Macao"""
+  MO
+
+  """Madagascar"""
+  MG
+
+  """Malawi"""
+  MW
+
+  """Malaysia"""
+  MY
+
+  """Maldives"""
+  MV
+
+  """Mali"""
+  ML
+
+  """Malta"""
+  MT
+
+  """Marshall Islands"""
+  MH
+
+  """Martinique"""
+  MQ
+
+  """Mauritania"""
+  MR
+
+  """Mauritius"""
+  MU
+
+  """Mayotte"""
+  YT
+
+  """Mexico"""
+  MX
+
+  """Micronesia"""
+  FM
+
+  """Moldova"""
+  MD
+
+  """Monaco"""
+  MC
+
+  """Mongolia"""
+  MN
+
+  """Montenegro"""
+  ME
+
+  """Montserrat"""
+  MS
+
+  """Morocco"""
+  MA
+
+  """Mozambique"""
+  MZ
+
+  """Myanmar"""
+  MM
+
+  """Namibia"""
+  NA
+
+  """Nauru"""
+  NR
+
+  """Nepal"""
+  NP
+
+  """Netherlands"""
+  NL
+
+  """New Caledonia"""
+  NC
+
+  """New Zealand"""
+  NZ
+
+  """Nicaragua"""
+  NI
+
+  """Niger"""
+  NE
+
+  """Nigeria"""
+  NG
+
+  """Niue"""
+  NU
+
+  """Norfolk Island"""
+  NF
+
+  """North Korea"""
+  KP
+
+  """North Macedonia"""
+  MK
+
+  """Northern Mariana Islands"""
+  MP
+
+  """Norway"""
+  NO
+
+  """Oman"""
+  OM
+
+  """Pakistan"""
+  PK
+
+  """Palau"""
+  PW
+
+  """Palestine, State of"""
+  PS
+
+  """Panama"""
+  PA
+
+  """Papua New Guinea"""
+  PG
+
+  """Paraguay"""
+  PY
+
+  """Peru"""
+  PE
+
+  """Philippines"""
+  PH
+
+  """Pitcairn"""
+  PN
+
+  """Poland"""
+  PL
+
+  """Portugal"""
+  PT
+
+  """Puerto Rico"""
+  PR
+
+  """Qatar"""
+  QA
+
+  """Réunion"""
+  RE
+
+  """Romania"""
+  RO
+
+  """Russia"""
+  RU
+
+  """Rwanda"""
+  RW
+
+  """Saint Barthélemy"""
+  BL
+
+  """Saint Helena, Ascension and Tristan da Cunha"""
+  SH
+
+  """Saint Kitts and Nevis"""
+  KN
+
+  """Saint Lucia"""
+  LC
+
+  """Saint Martin (French part)"""
+  MF
+
+  """Saint Pierre and Miquelon"""
+  PM
+
+  """Saint Vincent and the Grenadines"""
+  VC
+
+  """Samoa"""
+  WS
+
+  """San Marino"""
+  SM
+
+  """Sao Tome and Principe"""
+  ST
+
+  """Saudi Arabia"""
+  SA
+
+  """Senegal"""
+  SN
+
+  """Serbia"""
+  RS
+
+  """Seychelles"""
+  SC
+
+  """Sierra Leone"""
+  SL
+
+  """Singapore"""
+  SG
+
+  """Sint Maarten (Dutch part)"""
+  SX
+
+  """Slovakia"""
+  SK
+
+  """Slovenia"""
+  SI
+
+  """Solomon Islands"""
+  SB
+
+  """Somalia"""
+  SO
+
+  """South Africa"""
+  ZA
+
+  """South Georgia and the South Sandwich Islands"""
+  GS
+
+  """South Korea"""
+  KR
+
+  """South Sudan"""
+  SS
+
+  """Spain"""
+  ES
+
+  """Sri Lanka"""
+  LK
+
+  """Sudan"""
+  SD
+
+  """Suriname"""
+  SR
+
+  """Svalbard and Jan Mayen"""
+  SJ
+
+  """Sweden"""
+  SE
+
+  """Switzerland"""
+  CH
+
+  """Syria"""
+  SY
+
+  """Taiwan"""
+  TW
+
+  """Tajikistan"""
+  TJ
+
+  """Tanzania"""
+  TZ
+
+  """Thailand"""
+  TH
+
+  """Timor-Leste"""
+  TL
+
+  """Togo"""
+  TG
+
+  """Tokelau"""
+  TK
+
+  """Tonga"""
+  TO
+
+  """Trinidad and Tobago"""
+  TT
+
+  """Tunisia"""
+  TN
+
+  """Türkiye"""
+  TR
+
+  """Turkmenistan"""
+  TM
+
+  """Turks and Caicos Islands"""
+  TC
+
+  """Tuvalu"""
+  TV
+
+  """Uganda"""
+  UG
+
+  """Ukraine"""
+  UA
+
+  """United Arab Emirates"""
+  AE
+
+  """United Kingdom"""
+  GB
+
+  """United States Minor Outlying Islands"""
+  UM
+
+  """United States of America"""
+  US
+
+  """Uruguay"""
+  UY
+
+  """Uzbekistan"""
+  UZ
+
+  """Vanuatu"""
+  VU
+
+  """Venezuela"""
+  VE
+
+  """Vietnam"""
+  VN
+
+  """Virgin Islands (British)"""
+  VG
+
+  """Virgin Islands (U.S.)"""
+  VI
+
+  """Wallis and Futuna"""
+  WF
+
+  """Western Sahara"""
+  EH
+
+  """Yemen"""
+  YE
+
+  """Zambia"""
+  ZM
+
+  """Zimbabwe"""
+  ZW
+}
+
+type UserProfileNode implements Node {
+  """The ID of the object"""
+  id: ID!
+  rating: Decimal!
+  isOnline: Boolean!
+  languageCode: AccountsUserProfileLanguageCodeChoices!
+  isVerified: Boolean!
+  verificationLevel: Int!
+  createdAt: DateTime!
+  gender: AccountsUserProfileGenderChoices
+  phoneNumber: String
+  nextReward: NextRewardType
+}
+
+"""The `Decimal` scalar type represents a python Decimal."""
+scalar Decimal
+
+"""An enumeration."""
+enum AccountsUserProfileLanguageCodeChoices {
+  """Afrikaans"""
+  AF
+
+  """Arabic"""
+  AR
+
+  """Algerian Arabic"""
+  AR_DZ
+
+  """Asturian"""
+  AST
+
+  """Azerbaijani"""
+  AZ
+
+  """Bulgarian"""
+  BG
+
+  """Belarusian"""
+  BE
+
+  """Bengali"""
+  BN
+
+  """Breton"""
+  BR
+
+  """Bosnian"""
+  BS
+
+  """Catalan"""
+  CA
+
+  """Central Kurdish (Sorani)"""
+  CKB
+
+  """Czech"""
+  CS
+
+  """Welsh"""
+  CY
+
+  """Danish"""
+  DA
+
+  """German"""
+  DE
+
+  """Lower Sorbian"""
+  DSB
+
+  """Greek"""
+  EL
+
+  """English"""
+  EN
+
+  """Australian English"""
+  EN_AU
+
+  """British English"""
+  EN_GB
+
+  """Esperanto"""
+  EO
+
+  """Spanish"""
+  ES
+
+  """Argentinian Spanish"""
+  ES_AR
+
+  """Colombian Spanish"""
+  ES_CO
+
+  """Mexican Spanish"""
+  ES_MX
+
+  """Nicaraguan Spanish"""
+  ES_NI
+
+  """Venezuelan Spanish"""
+  ES_VE
+
+  """Estonian"""
+  ET
+
+  """Basque"""
+  EU
+
+  """Persian"""
+  FA
+
+  """Finnish"""
+  FI
+
+  """French"""
+  FR
+
+  """Frisian"""
+  FY
+
+  """Irish"""
+  GA
+
+  """Scottish Gaelic"""
+  GD
+
+  """Galician"""
+  GL
+
+  """Hebrew"""
+  HE
+
+  """Hindi"""
+  HI
+
+  """Croatian"""
+  HR
+
+  """Upper Sorbian"""
+  HSB
+
+  """Hungarian"""
+  HU
+
+  """Armenian"""
+  HY
+
+  """Interlingua"""
+  IA
+
+  """Indonesian"""
+  ID
+
+  """Igbo"""
+  IG
+
+  """Ido"""
+  IO
+
+  """Icelandic"""
+  IS
+
+  """Italian"""
+  IT
+
+  """Japanese"""
+  JA
+
+  """Georgian"""
+  KA
+
+  """Kabyle"""
+  KAB
+
+  """Kazakh"""
+  KK
+
+  """Khmer"""
+  KM
+
+  """Kannada"""
+  KN
+
+  """Korean"""
+  KO
+
+  """Kyrgyz"""
+  KY
+
+  """Luxembourgish"""
+  LB
+
+  """Lithuanian"""
+  LT
+
+  """Latvian"""
+  LV
+
+  """Macedonian"""
+  MK
+
+  """Malayalam"""
+  ML
+
+  """Mongolian"""
+  MN
+
+  """Marathi"""
+  MR
+
+  """Malay"""
+  MS
+
+  """Burmese"""
+  MY
+
+  """Norwegian Bokmål"""
+  NB
+
+  """Nepali"""
+  NE
+
+  """Dutch"""
+  NL
+
+  """Norwegian Nynorsk"""
+  NN
+
+  """Ossetic"""
+  OS
+
+  """Punjabi"""
+  PA
+
+  """Polish"""
+  PL
+
+  """Portuguese"""
+  PT
+
+  """Brazilian Portuguese"""
+  PT_BR
+
+  """Romanian"""
+  RO
+
+  """Russian"""
+  RU
+
+  """Slovak"""
+  SK
+
+  """Slovenian"""
+  SL
+
+  """Albanian"""
+  SQ
+
+  """Serbian"""
+  SR
+
+  """Serbian Latin"""
+  SR_LATN
+
+  """Swedish"""
+  SV
+
+  """Swahili"""
+  SW
+
+  """Tamil"""
+  TA
+
+  """Telugu"""
+  TE
+
+  """Tajik"""
+  TG
+
+  """Thai"""
+  TH
+
+  """Turkmen"""
+  TK
+
+  """Turkish"""
+  TR
+
+  """Tatar"""
+  TT
+
+  """Udmurt"""
+  UDM
+
+  """Uyghur"""
+  UG
+
+  """Ukrainian"""
+  UK
+
+  """Urdu"""
+  UR
+
+  """Uzbek"""
+  UZ
+
+  """Vietnamese"""
+  VI
+
+  """Simplified Chinese"""
+  ZH_HANS
+
+  """Traditional Chinese"""
+  ZH_HANT
+}
+
+"""An enumeration."""
+enum AccountsUserProfileGenderChoices {
+  """Male"""
+  MALE
+
+  """Female"""
+  FEMALE
+
+  """Other"""
+  OTHER
+
+  """Prefer not to say"""
+  PREFER_NOT_TO_SAY
+}
+
+type NextRewardType {
+  pointsNeeded: Int
+  reward: String
+}
+
+type UserNodeConnection {
+  """Pagination data for this connection."""
+  pageInfo: PageInfo!
+
+  """Contains the nodes in this connection."""
+  edges: [UserNodeEdge]!
+}
+
+"""A Relay edge containing a `UserNode` and its cursor."""
+type UserNodeEdge {
+  """The item at the end of the edge"""
+  node: UserNode
+
+  """A cursor for use in pagination"""
+  cursor: String!
+}
+
+type RoleNodeConnection {
+  """Pagination data for this connection."""
+  pageInfo: PageInfo!
+
+  """Contains the nodes in this connection."""
+  edges: [RoleNodeEdge]!
+  totalCount: Int
+  hasMore: Boolean
+  pageSize: Int
+  offset: Int
+}
+
+"""A Relay edge containing a `RoleNode` and its cursor."""
+type RoleNodeEdge {
+  """The item at the end of the edge"""
+  node: RoleNode
+
+  """A cursor for use in pagination"""
+  cursor: String!
+}
+
+type UserProfileImageNodeConnection {
+  """Pagination data for this connection."""
+  pageInfo: PageInfo!
+
+  """Contains the nodes in this connection."""
+  edges: [UserProfileImageNodeEdge]!
+}
+
+"""A Relay edge containing a `UserProfileImageNode` and its cursor."""
+type UserProfileImageNodeEdge {
+  """The item at the end of the edge"""
+  node: UserProfileImageNode
+
+  """A cursor for use in pagination"""
+  cursor: String!
+}
+
+type UserProfileImageNode implements Node {
+  """The ID of the object"""
+  id: ID!
+  user: UserNode!
+  image: String!
+  isVerified: Boolean!
+  verificationScore: Float
+  createdAt: DateTime!
+  faceDetected: Boolean!
+  faceCount: Int!
+  metadata: JSONString!
+  faceencodingSet(offset: Int, before: String, after: String, first: Int, last: Int, isActive: Boolean, version: String, createdAt: DateTime, createdAt_Year_Gt: DateTime, createdAt_Year_Lt: DateTime): FaceEncodingNodeConnection!
+  imageUrl: String
+}
+
+"""
+Allows use of a JSON String for input / output from the GraphQL schema.
+
+Use of this type is *not recommended* as you lose the benefits of having a defined, static
+schema (one of the key benefits of GraphQL).
+"""
+scalar JSONString
+
+type FaceEncodingNodeConnection {
+  """Pagination data for this connection."""
+  pageInfo: PageInfo!
+
+  """Contains the nodes in this connection."""
+  edges: [FaceEncodingNodeEdge]!
+}
+
+"""A Relay edge containing a `FaceEncodingNode` and its cursor."""
+type FaceEncodingNodeEdge {
+  """The item at the end of the edge"""
+  node: FaceEncodingNode
+
+  """A cursor for use in pagination"""
+  cursor: String!
+}
+
+type FaceEncodingNode implements Node {
+  """The ID of the object"""
+  id: ID!
+  user: UserNode!
+  version: String!
+  createdAt: DateTime!
+  updatedAt: DateTime!
+  isActive: Boolean!
+  sourceImage: UserProfileImageNode
+  metadata: JSONString!
+}
+
+type FaceVerificationNode implements Node {
+  """The ID of the object"""
+  id: ID!
+  user: UserNode!
+  isVerified: Boolean!
+  verificationMethod: AccountsFaceVerificationVerificationMethodChoices!
+  verificationChannel: AccountsFaceVerificationVerificationChannelChoices!
+  deviceId: String!
+  lastVerifiedAt: DateTime
+  verificationAttempts: Int!
+  lockedUntil: DateTime
+
+  """Minimum confidence score for verification (0-1)"""
+  confidenceThreshold: Float!
+
+  """Minimum liveness score (0-1)"""
+  livenessThreshold: Float!
+}
+
+"""An enumeration."""
+enum AccountsFaceVerificationVerificationMethodChoices {
+  """DeepFace"""
+  DEEPFACE
+
+  """Custom Algorithm"""
+  CUSTOM
+}
+
+"""An enumeration."""
+enum AccountsFaceVerificationVerificationChannelChoices {
+  """Static Photo"""
+  PHOTO
+
+  """Video Capture"""
+  VIDEO
+
+  """Liveness Check"""
+  LIVENESS
+}
+
+type RolePaginationType {
+  totalCount: Int
+  page: Int
+  pageSize: Int
+  hasNext: Boolean
+  hasPrev: Boolean
+  results: [RoleNode]
+}
+
+type StateType {
+  code: String
+  name: String
+}
+
+type LoyaltyHistoryNodeConnection {
+  """Pagination data for this connection."""
+  pageInfo: PageInfo!
+
+  """Contains the nodes in this connection."""
+  edges: [LoyaltyHistoryNodeEdge]!
+}
+
+"""A Relay edge containing a `LoyaltyHistoryNode` and its cursor."""
+type LoyaltyHistoryNodeEdge {
+  """The item at the end of the edge"""
+  node: LoyaltyHistoryNode
+
+  """A cursor for use in pagination"""
+  cursor: String!
+}
+
+type LoyaltyHistoryNode implements Node {
+  """The ID of the object"""
+  id: ID!
+  user: UserNode
+  reward: String!
+  dateRedeemed: DateTime!
+}
+
+type LoyaltyRewardTierNodeConnection {
+  """Pagination data for this connection."""
+  pageInfo: PageInfo!
+
+  """Contains the nodes in this connection."""
+  edges: [LoyaltyRewardTierNodeEdge]!
+}
+
+"""A Relay edge containing a `LoyaltyRewardTierNode` and its cursor."""
+type LoyaltyRewardTierNodeEdge {
+  """The item at the end of the edge"""
+  node: LoyaltyRewardTierNode
+
+  """A cursor for use in pagination"""
+  cursor: String!
+}
+
+type LoyaltyRewardTierNode implements Node {
+  """The ID of the object"""
+  id: ID!
+  pointsNeeded: Int!
+  reward: String!
+  description: String!
+  active: Boolean!
+}
+
+type NextAvailableRewardType {
+  pointsNeeded: Int
+  reward: String
+}
+
+type Mutation {
+  """Authenticate user with credentials"""
+  signIn(input: ObtainJSONWebTokenMutationInput!): ObtainJSONWebTokenMutationPayload
+
+  """Refresh access token using refresh token"""
+  refreshToken(input: RefreshTokenMutationInput!): RefreshTokenMutationPayload
+
+  """Revoke a refresh token"""
+  revokeToken(input: RevokeTokenMutationInput!): RevokeTokenMutationPayload
+
+  """Verify user account with token"""
+  verifyAccount(input: VerifyAccountMutationInput!): VerifyAccountMutationPayload
+
+  """Logout current user"""
+  logout(input: LogoutMutationInput!): LogoutMutationPayload
+
+  """Revoke all tokens for current user"""
+  revokeAllTokens(input: RevokeAllTokensMutationInput!): RevokeAllTokensMutationPayload
+
+  """Send password reset email"""
+  sendPasswordReset(input: SendPasswordResetMutationInput!): SendPasswordResetMutationPayload
+
+  """Create new user account with either email or phone number"""
+  signUp(input: CreateUserMutationInput!): CreateUserMutationPayload
+
+  """Update user profile information"""
+  updateUser(input: UpdateUserMutationInput!): UpdateUserMutationPayload
+
+  """Mutation to delete a user account with optional data retention"""
+  deleteUser(input: DeleteUserMutationInput!): DeleteUserMutationPayload
+
+  """Mutation to create a new Role in the system."""
+  createRole(input: CreateRoleMutationInput!): CreateRoleMutationPayload
+
+  """Assign role to user"""
+  assignUserRole(input: AssignUserRoleMutationInput!): AssignUserRoleMutationPayload
+
+  """Assign multiple roles to users"""
+  bulkAssignUserRoles(input: BulkAssignUserRolesMutationInput!): BulkAssignUserRolesMutationPayload
+
+  """Remove role from user"""
+  unassignUserRole(input: UnassignUserRoleMutationInput!): UnassignUserRoleMutationPayload
+
+  """Update all roles for a user"""
+  updateUserRoles(input: UpdateUserRolesMutationInput!): UpdateUserRolesMutationPayload
+
+  """Create or update user address"""
+  createAddress(input: AddressMutationInput!): AddressMutationPayload
+
+  """Register user's face for verification"""
+  registerFace(input: RegisterFaceMutationInput!): RegisterFaceMutationPayload
+
+  """Verify user's face"""
+  verifyFace(input: VerifyFaceMutationInput!): VerifyFaceMutationPayload
+
+  """Authenticate using face verification"""
+  authenticateWithFace(input: AuthenticateWithFaceMutationInput!): AuthenticateWithFaceMutationPayload
+
+  """Compare faces of two users"""
+  compareFaces(input: CompareFacesMutationInput!): CompareFacesMutationPayload
+
+  """Verify liveness from video capture"""
+  verifyLiveness(input: VerifyLivenessMutationInput!): VerifyLivenessMutationPayload
+
+  """Register biometric device for user"""
+  registerBiometricDevice(input: RegisterBiometricDeviceMutationInput!): RegisterBiometricDeviceMutationPayload
+
+  """Authenticate using biometric device"""
+  biometricAuth(input: BiometricAuthMutationInput!): BiometricAuthMutationPayload
+
+  """Send magic login link to user's email or phone"""
+  sendMagicLink(input: SendMagicLinkMutationInput!): SendMagicLinkMutationPayload
+
+  """Verify magic link token before using it"""
+  verifyMagicLink(input: VerifyMagicLinkMutationInput!): VerifyMagicLinkMutationPayload
+
+  """Resend magic link with cooldown protection"""
+  resendMagicLink(input: ResendMagicLinkMutationInput!): ResendMagicLinkMutationPayload
+
+  """Register a new WebAuthn credential"""
+  webauthnRegister(input: WebAuthnRegisterMutationInput!): WebAuthnRegisterMutationPayload
+
+  """Authenticate using WebAuthn"""
+  webauthnAuthenticate(input: WebAuthnAuthenticateMutationInput!): WebAuthnAuthenticateMutationPayload
+  updateLoyaltyPoints(input: UpdateLoyaltyPointsInput!): UpdateLoyaltyPointsPayload
+  redeemLoyaltyReward(input: RedeemLoyaltyRewardInput!): RedeemLoyaltyRewardPayload
+}
+
+"""Authenticate user with credentials"""
+type ObtainJSONWebTokenMutationPayload {
+  token: String
+  refreshToken: String
+  user: UserNode
+  clientMutationId: String
+}
+
+input ObtainJSONWebTokenMutationInput {
+  contact: String!
+  password: String!
+  rememberMe: Boolean = false
+  clientMutationId: String
+}
+
+"""Refresh access token using refresh token"""
+type RefreshTokenMutationPayload {
+  token: String
+  refreshToken: String
+  clientMutationId: String
+}
+
+input RefreshTokenMutationInput {
+  refreshToken: String!
+  clientMutationId: String
+}
+
+"""Revoke a refresh token"""
+type RevokeTokenMutationPayload {
+  success: Boolean
+  clientMutationId: String
+}
+
+input RevokeTokenMutationInput {
+  refreshToken: String!
+  clientMutationId: String
+}
+
+"""Verify user account with token"""
+type VerifyAccountMutationPayload {
+  success: Boolean
+  user: UserNode
+  clientMutationId: String
+}
+
+input VerifyAccountMutationInput {
+  token: String!
+  clientMutationId: String
+}
+
+"""Logout current user"""
+type LogoutMutationPayload {
+  success: Boolean
+  clientMutationId: String
+}
+
+input LogoutMutationInput {
+  clientMutationId: String
+}
+
+"""Revoke all tokens for current user"""
+type RevokeAllTokensMutationPayload {
+  revokedCount: Int
+  clientMutationId: String
+}
+
+input RevokeAllTokensMutationInput {
+  clientMutationId: String
+}
+
+"""Send password reset email"""
+type SendPasswordResetMutationPayload {
+  success: Boolean
+  clientMutationId: String
+}
+
+input SendPasswordResetMutationInput {
+  email: String!
+  clientMutationId: String
+}
+
+"""Create new user account with either email or phone number"""
+type CreateUserMutationPayload {
+  user: UserNode
+  token: String
+  verificationSent: Boolean
+  clientMutationId: String
+}
+
+input CreateUserMutationInput {
+  """Email address or phone number"""
+  contact: String!
+  password: String!
+  roles: [UserRoleInput]
+  sendVerification: Boolean = true
+  metadata: GenericScalar
+  clientMutationId: String
+}
+
+input UserRoleInput {
+  roleName: String!
+  appName: String!
+  isActive: Boolean = true
+  expiresAt: DateTime
+}
+
+"""
+The `GenericScalar` scalar type represents a generic
+GraphQL scalar value that could be:
+String, Boolean, Int, Float, List or Object.
+"""
+scalar GenericScalar
+
+"""Update user profile information"""
+type UpdateUserMutationPayload {
+  user: UserNode
+  success: Boolean
+  clientMutationId: String
+}
+
+input UpdateUserMutationInput {
+  userId: ID!
+  firstName: String
+  lastName: String
+  group: String
+  clientMutationId: String
+}
+
+"""Mutation to delete a user account with optional data retention"""
+type DeleteUserMutationPayload {
+  success: Boolean!
+  message: String
+  clientMutationId: String
+}
+
+input DeleteUserMutationInput {
+  userId: ID!
+  hardDelete: Boolean = false
+  transferDataTo: ID
+  reason: String
+  clientMutationId: String
+}
+
+"""Mutation to create a new Role in the system."""
+type CreateRoleMutationPayload {
+  role: RoleNode
+  success: Boolean
+  message: String
+  clientMutationId: String
+}
+
+input CreateRoleMutationInput {
+  name: String!
+  appName: String!
+  description: String
+  isDefault: Boolean = false
+  requiresVerification: Boolean = false
+  clientMutationId: String
+}
+
+"""Assign role to user"""
+type AssignUserRoleMutationPayload {
+  user: UserNode
+  clientMutationId: String
+}
+
+input AssignUserRoleMutationInput {
+  userId: ID!
+  appName: String!
+  roleName: String!
+  isActive: Boolean = true
+  clientMutationId: String
+}
+
+"""Assign multiple roles to users"""
+type BulkAssignUserRolesMutationPayload {
+  success: Boolean
+  message: String
+  clientMutationId: String
+}
+
+input BulkAssignUserRolesMutationInput {
+  userIds: [ID]!
+  roles: [UserRoleInput]!
+  clientMutationId: String
+}
+
+"""Remove role from user"""
+type UnassignUserRoleMutationPayload {
+  success: Boolean
+  message: String
+  clientMutationId: String
+}
+
+input UnassignUserRoleMutationInput {
+  userId: ID!
+  appName: String!
+  roleName: String!
+  clientMutationId: String
+}
+
+"""Update all roles for a user"""
+type UpdateUserRolesMutationPayload {
+  user: UserNode
+  clientMutationId: String
+}
+
+input UpdateUserRolesMutationInput {
+  userId: ID!
+  roles: [UserRoleInput]!
+  clientMutationId: String
+}
+
+"""Create or update user address"""
+type AddressMutationPayload {
+  address: AddressNode
+  clientMutationId: String
+}
+
+input AddressMutationInput {
+  streetAddress1: String!
+  streetAddress2: String
+  city: String!
+  state: String!
+  postalCode: String
+  country: String!
+  isDefault: Boolean = false
+  addressType: String!
+  clientMutationId: String
+}
+
+"""Register user's face for verification"""
+type RegisterFaceMutationPayload {
+  success: Boolean
+  verification: FaceVerificationResult
+  image: UserProfileImageNode
+  clientMutationId: String
+}
+
+type FaceVerificationResult {
+  verified: Boolean
+  confidence: Float
+  threshold: Float
+  isNewFace: Boolean
+  message: String
+  imageId: ID
+}
+
+input RegisterFaceMutationInput {
+  setAsPrimary: Boolean = true
+  verifyImmediately: Boolean = true
+  clientMutationId: String
+}
+
+"""Verify user's face"""
+type VerifyFaceMutationPayload {
+  verification: FaceVerificationResult
+  clientMutationId: String
+}
+
+input VerifyFaceMutationInput {
+  userId: ID
+  clientMutationId: String
+}
+
+"""Authenticate using face verification"""
+type AuthenticateWithFaceMutationPayload {
+  token: String
+  refreshToken: String
+  user: UserNode
+  requiresFaceVerification: Boolean
+  clientMutationId: String
+}
+
+input AuthenticateWithFaceMutationInput {
+  contact: String!
+  password: String!
+  clientMutationId: String
+}
+
+"""Compare faces of two users"""
+type CompareFacesMutationPayload {
+  similarityScore: Float
+  areSimilar: Boolean
+  clientMutationId: String
+}
+
+input CompareFacesMutationInput {
+  userId1: ID!
+  userId2: ID!
+  clientMutationId: String
+}
+
+"""Verify liveness from video capture"""
+type VerifyLivenessMutationPayload {
+  success: Boolean
+  livenessScore: Float
+  isLive: Boolean
+  verification: FaceVerificationResult
+  clientMutationId: String
+}
+
+input VerifyLivenessMutationInput {
+  clientMutationId: String
+}
+
+"""Register biometric device for user"""
+type RegisterBiometricDeviceMutationPayload {
+  device: BiometricDeviceNode
+  success: Boolean
+  clientMutationId: String
+}
+
+type BiometricDeviceNode implements Node {
+  """The ID of the object"""
+  id: ID!
+  user: UserProfileNode!
+  deviceId: String!
+  trusted: Boolean!
+  deviceInfo: String!
+  biometricHash: String!
+  registeredAt: DateTime!
+  userEmail: String
+}
+
+input RegisterBiometricDeviceMutationInput {
+  deviceId: String!
+  publicKey: String!
+  deviceName: String
+  clientMutationId: String
+}
+
+"""Authenticate using biometric device"""
+type BiometricAuthMutationPayload {
+  token: String
+  refreshToken: String
+  user: UserNode
+  clientMutationId: String
+}
+
+input BiometricAuthMutationInput {
+  deviceId: String!
+  signature: String!
+  challenge: String!
+  clientMutationId: String
+}
+
+"""Send magic login link to user's email or phone"""
+type SendMagicLinkMutationPayload {
+  success: Boolean
+  message: String
+  clientMutationId: String
+}
+
+input SendMagicLinkMutationInput {
+  contact: String!
+  redirectTo: String
+  channel: String = "email"
+  clientMutationId: String
+}
+
+"""Verify magic link token before using it"""
+type VerifyMagicLinkMutationPayload {
+  valid: Boolean
+  requiresFaceVerification: Boolean
+  requiresLivenessCheck: Boolean
+  user: UserNode
+  message: String
+  clientMutationId: String
+}
+
+input VerifyMagicLinkMutationInput {
+  token: String!
+  purpose: String
+  clientMutationId: String
+}
+
+"""Resend magic link with cooldown protection"""
+type ResendMagicLinkMutationPayload {
+  success: Boolean
+  message: String
+  clientMutationId: String
+}
+
+input ResendMagicLinkMutationInput {
+  contact: String!
+  channel: String = "email"
+  clientMutationId: String
+}
+
+"""Register a new WebAuthn credential"""
+type WebAuthnRegisterMutationPayload {
+  success: Boolean
+  credentialId: String
+  clientMutationId: String
+}
+
+input WebAuthnRegisterMutationInput {
+  credential: GenericScalar!
+  challenge: String!
+  deviceName: String
+  clientMutationId: String
+}
+
+"""Authenticate using WebAuthn"""
+type WebAuthnAuthenticateMutationPayload {
+  success: Boolean
+  token: String
+  refreshToken: String
+  clientMutationId: String
+}
+
+input WebAuthnAuthenticateMutationInput {
+  credential: GenericScalar!
+  challenge: String!
+  clientMutationId: String
+}
+
+type UpdateLoyaltyPointsPayload {
+  success: Boolean
+  newPoints: Int
+  clientMutationId: String
+}
+
+input UpdateLoyaltyPointsInput {
+  delta: Int!
+  clientMutationId: String
+}
+
+type RedeemLoyaltyRewardPayload {
+  success: Boolean
+  message: String
+  remainingPoints: Int
+  clientMutationId: String
+}
+
+input RedeemLoyaltyRewardInput {
+  rewardId: ID!
+  clientMutationId: String
+}
+
+type Subscription {
+  listingCreated(id: ID): ListingCreatedSubscription
+  _debug: DjangoDebug
+}
+
+type ListingCreatedSubscription {
+  listing: ListingNode
+}
+
+type ListingNode implements Node {
+  """The ID of the object"""
+  id: ID!
+  created: DateTime!
+  updated: DateTime!
+  location: PointScalar
+  latitude: Decimal
+  longitude: Decimal
+
+  """"""
+  locationPoint: PointScalar
+  propertyArea: RealestateListingPropertyAreaChoices!
+  listingType: ListingTypeNode!
+  title: String
+  slug: String!
+  description: String!
+  address: String
+  bedrooms: Int
+  propertyLocation: String
+  price: Decimal
+  ceilingHeight: Float
+  bathrooms: Int
+  garage: Int!
+  squareFeet: Float!
+  lotSize: Float!
+  image: String!
+  propertyStatus: RealestateListingPropertyStatusChoices!
+  propertyFor: RealestateListingPropertyForChoices!
+  isPublished: Boolean!
+  yearBuilt: Int!
+  agent: AgentNode
+  owner: UserProfileNode
+  reviewer: UserProfileNode
+  freeFrom: Date!
+  images(offset: Int, before: String, after: String, first: Int, last: Int, listing_Id: ID, shortDescription_Icontains: String, created: DateTime, created_Lt: DateTime, created_Gt: DateTime): ListingImageNodeConnection!
+  files(offset: Int, before: String, after: String, first: Int, last: Int, listing_Id: ID, name: String, name_Icontains: String, created: DateTime, created_Lt: DateTime, created_Gt: DateTime, updated: DateTime, updated_Lt: DateTime, updated_Gt: DateTime, forCustomer: Boolean): ListingFileNodeConnection!
+  propertyupdatelogSet(offset: Int, before: String, after: String, first: Int, last: Int, property_Id: ID, updatedBy_Id: ID, timestamp: DateTime, timestamp_Lt: DateTime, timestamp_Gt: DateTime): PropertyUpdateLogNodeConnection!
+  virtualtourSet(offset: Int, before: String, after: String, first: Int, last: Int, property_Id: ID, isPrimary: Boolean, createdAt: DateTime, createdAt_Lt: DateTime, createdAt_Gt: DateTime): VirtualTourNodeConnection!
+  livetourscheduleSet(offset: Int, before: String, after: String, first: Int, last: Int, property_Id: ID, agent_Id: ID, scheduledTime: DateTime, scheduledTime_Lt: DateTime, scheduledTime_Gt: DateTime, maxAttendees: Int, maxAttendees_Lt: Int, maxAttendees_Gt: Int): LiveTourScheduleNodeConnection!
+  documentpackageSet(offset: Int, before: String, after: String, first: Int, last: Int, property_Id: ID, createdBy_Id: ID, isCompleted: Boolean, createdAt: DateTime, createdAt_Lt: DateTime, createdAt_Gt: DateTime): DocumentPackageNodeConnection!
+  messagethreadSet(offset: Int, before: String, after: String, first: Int, last: Int, property_Id: ID, participants_Id: ID, createdAt: DateTime, createdAt_Lt: DateTime, createdAt_Gt: DateTime, updatedAt: DateTime, updatedAt_Lt: DateTime, updatedAt_Gt: DateTime): MessageThreadNodeConnection!
+  armodelSet(offset: Int, before: String, after: String, first: Int, last: Int, property_Id: ID, anchorType: RealestateARModelAnchorTypeChoices, scale: Float, scale_Lt: Float, scale_Gt: Float): ARModelNodeConnection!
+  transactionSet(offset: Int, before: String, after: String, first: Int, last: Int, property_Id: ID, buyer_Id: ID, seller_Id: ID, status: RealestateTransactionStatusChoices, offerPrice: Decimal, offerPrice_Lt: Decimal, offerPrice_Gt: Decimal, createdAt: DateTime, createdAt_Lt: DateTime, createdAt_Gt: DateTime, updatedAt: DateTime, updatedAt_Lt: DateTime, updatedAt_Gt: DateTime, targetCloseDate: Date, targetCloseDate_Lt: Date, targetCloseDate_Gt: Date): TransactionNodeConnection!
+  proximities(offset: Int, before: String, after: String, first: Int, last: Int, property_Id: ID, buyer_Id: ID, distanceKm: Float, distanceKm_Lt: Float, distanceKm_Gt: Float, isInPreferredLocation: Boolean): PropertyProximityNodeConnection!
+}
+
+"""A GIS Point geojson"""
+scalar PointScalar
+
+"""An enumeration."""
+enum RealestateListingPropertyAreaChoices {
+  """Residential"""
+  R
+
+  """Commercial"""
+  C
+
+  """Agricultural"""
+  A
+}
+
+type ListingTypeNode implements Node {
+  """The ID of the object"""
+  id: ID!
+  created: DateTime!
+  updated: DateTime!
+  propertyType: RealestateListingTypePropertyTypeChoices!
+  listingSet(offset: Int, before: String, after: String, first: Int, last: Int): PropertyWithProximityNodeConnection!
+}
+
+"""An enumeration."""
+enum RealestateListingTypePropertyTypeChoices {
+  """House"""
+  HOUSE
+
+  """Apartment"""
+  APARTMENT
+
+  """Office"""
+  OFFICE
+
+  """Warehouse"""
+  WAREHOUSE
+
+  """Land"""
+  LAND
+}
+
+type PropertyWithProximityNodeConnection {
+  """Pagination data for this connection."""
+  pageInfo: PageInfo!
+
+  """Contains the nodes in this connection."""
+  edges: [PropertyWithProximityNodeEdge]!
+}
+
+"""A Relay edge containing a `PropertyWithProximityNode` and its cursor."""
+type PropertyWithProximityNodeEdge {
+  """The item at the end of the edge"""
+  node: PropertyWithProximityNode
+
+  """A cursor for use in pagination"""
+  cursor: String!
+}
+
+type PropertyWithProximityNode implements Node {
+  """The ID of the object"""
+  id: ID!
+  created: DateTime!
+  updated: DateTime!
+  location: PointScalar
+  latitude: Decimal
+  longitude: Decimal
+
+  """"""
+  locationPoint: PointScalar
+  propertyArea: RealestateListingPropertyAreaChoices!
+  listingType: ListingTypeNode!
+  title: String
+  slug: String!
+  description: String!
+  address: String
+  bedrooms: Int
+  propertyLocation: String
+  price: Decimal
+  ceilingHeight: Float
+  bathrooms: Int
+  garage: Int!
+  squareFeet: Float!
+  lotSize: Float!
+  image: String!
+  propertyStatus: RealestateListingPropertyStatusChoices!
+  propertyFor: RealestateListingPropertyForChoices!
+  isPublished: Boolean!
+  yearBuilt: Int!
+  agent: AgentNode
+  owner: UserProfileNode
+  reviewer: UserProfileNode
+  freeFrom: Date!
+  images(offset: Int, before: String, after: String, first: Int, last: Int, listing_Id: ID, shortDescription_Icontains: String, created: DateTime, created_Lt: DateTime, created_Gt: DateTime): ListingImageNodeConnection!
+  files(offset: Int, before: String, after: String, first: Int, last: Int, listing_Id: ID, name: String, name_Icontains: String, created: DateTime, created_Lt: DateTime, created_Gt: DateTime, updated: DateTime, updated_Lt: DateTime, updated_Gt: DateTime, forCustomer: Boolean): ListingFileNodeConnection!
+  propertyupdatelogSet(offset: Int, before: String, after: String, first: Int, last: Int, property_Id: ID, updatedBy_Id: ID, timestamp: DateTime, timestamp_Lt: DateTime, timestamp_Gt: DateTime): PropertyUpdateLogNodeConnection!
+  virtualtourSet(offset: Int, before: String, after: String, first: Int, last: Int, property_Id: ID, isPrimary: Boolean, createdAt: DateTime, createdAt_Lt: DateTime, createdAt_Gt: DateTime): VirtualTourNodeConnection!
+  livetourscheduleSet(offset: Int, before: String, after: String, first: Int, last: Int, property_Id: ID, agent_Id: ID, scheduledTime: DateTime, scheduledTime_Lt: DateTime, scheduledTime_Gt: DateTime, maxAttendees: Int, maxAttendees_Lt: Int, maxAttendees_Gt: Int): LiveTourScheduleNodeConnection!
+  documentpackageSet(offset: Int, before: String, after: String, first: Int, last: Int, property_Id: ID, createdBy_Id: ID, isCompleted: Boolean, createdAt: DateTime, createdAt_Lt: DateTime, createdAt_Gt: DateTime): DocumentPackageNodeConnection!
+  messagethreadSet(offset: Int, before: String, after: String, first: Int, last: Int, property_Id: ID, participants_Id: ID, createdAt: DateTime, createdAt_Lt: DateTime, createdAt_Gt: DateTime, updatedAt: DateTime, updatedAt_Lt: DateTime, updatedAt_Gt: DateTime): MessageThreadNodeConnection!
+  armodelSet(offset: Int, before: String, after: String, first: Int, last: Int, property_Id: ID, anchorType: RealestateARModelAnchorTypeChoices, scale: Float, scale_Lt: Float, scale_Gt: Float): ARModelNodeConnection!
+  transactionSet(offset: Int, before: String, after: String, first: Int, last: Int, property_Id: ID, buyer_Id: ID, seller_Id: ID, status: RealestateTransactionStatusChoices, offerPrice: Decimal, offerPrice_Lt: Decimal, offerPrice_Gt: Decimal, createdAt: DateTime, createdAt_Lt: DateTime, createdAt_Gt: DateTime, updatedAt: DateTime, updatedAt_Lt: DateTime, updatedAt_Gt: DateTime, targetCloseDate: Date, targetCloseDate_Lt: Date, targetCloseDate_Gt: Date): TransactionNodeConnection!
+  proximities(offset: Int, before: String, after: String, first: Int, last: Int, property_Id: ID, buyer_Id: ID, distanceKm: Float, distanceKm_Lt: Float, distanceKm_Gt: Float, isInPreferredLocation: Boolean): PropertyProximityNodeConnection!
+  proximity: ProximityNode
+  distanceKm: Float
+  isNearPreferred: Boolean
+}
+
+"""An enumeration."""
+enum RealestateListingPropertyStatusChoices {
+  """Draft"""
+  DRAFT
+
+  """Published"""
+  PUBLISHED
+
+  """Sold"""
+  SOLD
+
+  """Rented"""
+  RENTED
+
+  """Pending Review"""
+  PENDING_REVIEW
+
+  """Rejected"""
+  REJECTED
+
+  """Approved"""
+  APPROVED
+}
+
+"""An enumeration."""
+enum RealestateListingPropertyForChoices {
+  """Buy"""
+  B
+
+  """Sale"""
+  S
+
+  """Rent"""
+  R
+
+  """Lease"""
+  L
+}
+
+type AgentNode implements Node {
+  """The ID of the object"""
+  id: ID!
+  address: AddressNode
+  location: PointScalar
+  latitude: Decimal
+  longitude: Decimal
+
+  """"""
+  locationPoint: PointScalar
+  agent: UserProfileNode
+  listingsAgent(offset: Int, before: String, after: String, first: Int, last: Int): PropertyWithProximityNodeConnection!
+  livetourscheduleSet(offset: Int, before: String, after: String, first: Int, last: Int, property_Id: ID, agent_Id: ID, scheduledTime: DateTime, scheduledTime_Lt: DateTime, scheduledTime_Gt: DateTime, maxAttendees: Int, maxAttendees_Lt: Int, maxAttendees_Gt: Int): LiveTourScheduleNodeConnection!
+}
+
+type LiveTourScheduleNodeConnection {
+  """Pagination data for this connection."""
+  pageInfo: PageInfo!
+
+  """Contains the nodes in this connection."""
+  edges: [LiveTourScheduleNodeEdge]!
+}
+
+"""A Relay edge containing a `LiveTourScheduleNode` and its cursor."""
+type LiveTourScheduleNodeEdge {
+  """The item at the end of the edge"""
+  node: LiveTourScheduleNode
+
+  """A cursor for use in pagination"""
+  cursor: String!
+}
+
+type LiveTourScheduleNode implements Node {
+  """The ID of the object"""
+  id: ID!
+  property: PropertyWithProximityNode!
+  agent: AgentNode!
+  scheduledTime: DateTime!
+  durationMinutes: Int!
+  meetingLink: String!
+  maxAttendees: Int!
+  attendees(offset: Int, before: String, after: String, first: Int, last: Int, email: String, email_Icontains: String, email_Istartswith: String, phoneNumber: String, phoneNumber_Icontains: String, firstName: String, firstName_Icontains: String, firstName_Istartswith: String, lastName: String, lastName_Icontains: String, lastName_Istartswith: String, isActive: Boolean, dateJoined: DateTime, dateJoined_Year_Gt: DateTime, dateJoined_Year_Lt: DateTime): UserNodeConnection!
+  livetourregistrationSet(offset: Int, before: String, after: String, first: Int, last: Int, user_Id: ID, tour_Id: ID, registeredAt: DateTime, registeredAt_Lt: DateTime, registeredAt_Gt: DateTime, attended: Boolean): LiveTourRegistrationNodeConnection!
+}
+
+type LiveTourRegistrationNodeConnection {
+  """Pagination data for this connection."""
+  pageInfo: PageInfo!
+
+  """Contains the nodes in this connection."""
+  edges: [LiveTourRegistrationNodeEdge]!
+}
+
+"""A Relay edge containing a `LiveTourRegistrationNode` and its cursor."""
+type LiveTourRegistrationNodeEdge {
+  """The item at the end of the edge"""
+  node: LiveTourRegistrationNode
+
+  """A cursor for use in pagination"""
+  cursor: String!
+}
+
+type LiveTourRegistrationNode implements Node {
+  """The ID of the object"""
+  id: ID!
+  user: UserNode!
+  tour: LiveTourScheduleNode!
+  registeredAt: DateTime!
+  attended: Boolean!
+}
+
+"""
+The `Date` scalar type represents a Date
+value as specified by
+[iso8601](https://en.wikipedia.org/wiki/ISO_8601).
+"""
+scalar Date
+
+type ListingImageNodeConnection {
+  """Pagination data for this connection."""
+  pageInfo: PageInfo!
+
+  """Contains the nodes in this connection."""
+  edges: [ListingImageNodeEdge]!
+}
+
+"""A Relay edge containing a `ListingImageNode` and its cursor."""
+type ListingImageNodeEdge {
+  """The item at the end of the edge"""
+  node: ListingImageNode
+
+  """A cursor for use in pagination"""
+  cursor: String!
+}
+
+type ListingImageNode implements Node {
+  """The ID of the object"""
+  id: ID!
+  created: DateTime!
+  updated: DateTime!
+  listing: PropertyWithProximityNode!
+  image: String!
+  shortDescription: String!
+}
+
+type ListingFileNodeConnection {
+  """Pagination data for this connection."""
+  pageInfo: PageInfo!
+
+  """Contains the nodes in this connection."""
+  edges: [ListingFileNodeEdge]!
+}
+
+"""A Relay edge containing a `ListingFileNode` and its cursor."""
+type ListingFileNodeEdge {
+  """The item at the end of the edge"""
+  node: ListingFileNode
+
+  """A cursor for use in pagination"""
+  cursor: String!
+}
+
+type ListingFileNode implements Node {
+  """The ID of the object"""
+  id: ID!
+  created: DateTime!
+  updated: DateTime!
+  listing: PropertyWithProximityNode!
+  name: String!
+  shortDescription: String!
+  file: String
+  forCustomer: Boolean!
+}
+
+type PropertyUpdateLogNodeConnection {
+  """Pagination data for this connection."""
+  pageInfo: PageInfo!
+
+  """Contains the nodes in this connection."""
+  edges: [PropertyUpdateLogNodeEdge]!
+}
+
+"""A Relay edge containing a `PropertyUpdateLogNode` and its cursor."""
+type PropertyUpdateLogNodeEdge {
+  """The item at the end of the edge"""
+  node: PropertyUpdateLogNode
+
+  """A cursor for use in pagination"""
+  cursor: String!
+}
+
+type PropertyUpdateLogNode implements Node {
+  """The ID of the object"""
+  id: ID!
+  property: PropertyWithProximityNode!
+  updatedBy: UserProfileNode
+  changedFields: JSONString!
+  timestamp: DateTime!
+}
+
+type VirtualTourNodeConnection {
+  """Pagination data for this connection."""
+  pageInfo: PageInfo!
+
+  """Contains the nodes in this connection."""
+  edges: [VirtualTourNodeEdge]!
+}
+
+"""A Relay edge containing a `VirtualTourNode` and its cursor."""
+type VirtualTourNodeEdge {
+  """The item at the end of the edge"""
+  node: VirtualTourNode
+
+  """A cursor for use in pagination"""
+  cursor: String!
+}
+
+type VirtualTourNode implements Node {
+  """The ID of the object"""
+  id: ID!
+  property: PropertyWithProximityNode!
+  tourUrl: String!
+  thumbnail: String!
+  createdAt: DateTime!
+  isPrimary: Boolean!
+}
+
+type DocumentPackageNodeConnection {
+  """Pagination data for this connection."""
+  pageInfo: PageInfo!
+
+  """Contains the nodes in this connection."""
+  edges: [DocumentPackageNodeEdge]!
+}
+
+"""A Relay edge containing a `DocumentPackageNode` and its cursor."""
+type DocumentPackageNodeEdge {
+  """The item at the end of the edge"""
+  node: DocumentPackageNode
+
+  """A cursor for use in pagination"""
+  cursor: String!
+}
+
+type DocumentPackageNode implements Node {
+  """The ID of the object"""
+  id: ID!
+  property: PropertyWithProximityNode!
+  title: String!
+  createdBy: UserNode!
+  createdAt: DateTime!
+  isCompleted: Boolean!
+  documentSet(offset: Int, before: String, after: String, first: Int, last: Int, package_Id: ID, title: String, title_Icontains: String, requiresSignature: Boolean, order: Int, order_Lt: Int, order_Gt: Int): DocumentNodeConnection!
+}
+
+type DocumentNodeConnection {
+  """Pagination data for this connection."""
+  pageInfo: PageInfo!
+
+  """Contains the nodes in this connection."""
+  edges: [DocumentNodeEdge]!
+}
+
+"""A Relay edge containing a `DocumentNode` and its cursor."""
+type DocumentNodeEdge {
+  """The item at the end of the edge"""
+  node: DocumentNode
+
+  """A cursor for use in pagination"""
+  cursor: String!
+}
+
+type DocumentNode implements Node {
+  """The ID of the object"""
+  id: ID!
+  package: DocumentPackageNode!
+  file: String!
+  title: String!
+  requiresSignature: Boolean!
+  order: Int!
+  documentsignatureSet(offset: Int, before: String, after: String, first: Int, last: Int, document_Id: ID, user_Id: ID, signedAt: DateTime, signedAt_Lt: DateTime, signedAt_Gt: DateTime): DocumentSignatureNodeConnection!
+  transactionmilestoneSet(offset: Int, before: String, after: String, first: Int, last: Int, transaction_Id: ID, name: String, name_Icontains: String, dueDate: Date, dueDate_Lt: Date, dueDate_Gt: Date, completedDate: Date, completedDate_Lt: Date, completedDate_Gt: Date, required: Boolean): TransactionMilestoneNodeConnection!
+}
+
+type DocumentSignatureNodeConnection {
+  """Pagination data for this connection."""
+  pageInfo: PageInfo!
+
+  """Contains the nodes in this connection."""
+  edges: [DocumentSignatureNodeEdge]!
+}
+
+"""A Relay edge containing a `DocumentSignatureNode` and its cursor."""
+type DocumentSignatureNodeEdge {
+  """The item at the end of the edge"""
+  node: DocumentSignatureNode
+
+  """A cursor for use in pagination"""
+  cursor: String!
+}
+
+type DocumentSignatureNode implements Node {
+  """The ID of the object"""
+  id: ID!
+  document: DocumentNode!
+  user: UserNode!
+  signedAt: DateTime!
+  signatureImage: String!
+  ipAddress: String!
+}
+
+type TransactionMilestoneNodeConnection {
+  """Pagination data for this connection."""
+  pageInfo: PageInfo!
+
+  """Contains the nodes in this connection."""
+  edges: [TransactionMilestoneNodeEdge]!
+}
+
+"""A Relay edge containing a `TransactionMilestoneNode` and its cursor."""
+type TransactionMilestoneNodeEdge {
+  """The item at the end of the edge"""
+  node: TransactionMilestoneNode
+
+  """A cursor for use in pagination"""
+  cursor: String!
+}
+
+type TransactionMilestoneNode implements Node {
+  """The ID of the object"""
+  id: ID!
+  transaction: TransactionNode!
+  name: String!
+  dueDate: Date!
+  completedDate: Date
+  required: Boolean!
+  documents(offset: Int, before: String, after: String, first: Int, last: Int, package_Id: ID, title: String, title_Icontains: String, requiresSignature: Boolean, order: Int, order_Lt: Int, order_Gt: Int): DocumentNodeConnection!
+}
+
+type TransactionNode implements Node {
+  """The ID of the object"""
+  id: ID!
+  property: PropertyWithProximityNode!
+  buyer: ClientNode!
+  seller: UserProfileNode!
+  status: RealestateTransactionStatusChoices!
+  offerPrice: Decimal!
+  agreedPrice: Decimal
+  createdAt: DateTime!
+  updatedAt: DateTime!
+  targetCloseDate: Date!
+  actualCloseDate: Date
+  transactionmilestoneSet(offset: Int, before: String, after: String, first: Int, last: Int, transaction_Id: ID, name: String, name_Icontains: String, dueDate: Date, dueDate_Lt: Date, dueDate_Gt: Date, completedDate: Date, completedDate_Lt: Date, completedDate_Gt: Date, required: Boolean): TransactionMilestoneNodeConnection!
+}
+
+type ClientNode implements Node {
+  """The ID of the object"""
+  id: ID!
+  address: AddressNode
+  location: PointScalar
+  latitude: Decimal
+  longitude: Decimal
+
+  """"""
+  locationPoint: PointScalar
+  client: UserProfileNode
+  transactionSet(offset: Int, before: String, after: String, first: Int, last: Int, property_Id: ID, buyer_Id: ID, seller_Id: ID, status: RealestateTransactionStatusChoices, offerPrice: Decimal, offerPrice_Lt: Decimal, offerPrice_Gt: Decimal, createdAt: DateTime, createdAt_Lt: DateTime, createdAt_Gt: DateTime, updatedAt: DateTime, updatedAt_Lt: DateTime, updatedAt_Gt: DateTime, targetCloseDate: Date, targetCloseDate_Lt: Date, targetCloseDate_Gt: Date): TransactionNodeConnection!
+}
+
+type TransactionNodeConnection {
+  """Pagination data for this connection."""
+  pageInfo: PageInfo!
+
+  """Contains the nodes in this connection."""
+  edges: [TransactionNodeEdge]!
+}
+
+"""A Relay edge containing a `TransactionNode` and its cursor."""
+type TransactionNodeEdge {
+  """The item at the end of the edge"""
+  node: TransactionNode
+
+  """A cursor for use in pagination"""
+  cursor: String!
+}
+
+"""An enumeration."""
+enum RealestateTransactionStatusChoices {
+  """Pre-Offer"""
+  PRE_OFFER
+
+  """Offer Pending"""
+  OFFER_PENDING
+
+  """Under Contract"""
+  UNDER_CONTRACT
+
+  """Due Diligence"""
+  DUE_DILIGENCE
+
+  """Closing"""
+  CLOSING
+
+  """Closed"""
+  CLOSED
+
+  """Cancelled"""
+  CANCELLED
+}
+
+type MessageThreadNodeConnection {
+  """Pagination data for this connection."""
+  pageInfo: PageInfo!
+
+  """Contains the nodes in this connection."""
+  edges: [MessageThreadNodeEdge]!
+}
+
+"""A Relay edge containing a `MessageThreadNode` and its cursor."""
+type MessageThreadNodeEdge {
+  """The item at the end of the edge"""
+  node: MessageThreadNode
+
+  """A cursor for use in pagination"""
+  cursor: String!
+}
+
+type MessageThreadNode implements Node {
+  """The ID of the object"""
+  id: ID!
+  property: PropertyWithProximityNode
+  participants(offset: Int, before: String, after: String, first: Int, last: Int, email: String, email_Icontains: String, email_Istartswith: String, phoneNumber: String, phoneNumber_Icontains: String, firstName: String, firstName_Icontains: String, firstName_Istartswith: String, lastName: String, lastName_Icontains: String, lastName_Istartswith: String, isActive: Boolean, dateJoined: DateTime, dateJoined_Year_Gt: DateTime, dateJoined_Year_Lt: DateTime): UserNodeConnection!
+  createdAt: DateTime!
+  updatedAt: DateTime!
+  messageSet(offset: Int, before: String, after: String, first: Int, last: Int, thread_Id: ID, sender_Id: ID, read: Boolean, timestamp: DateTime, timestamp_Lt: DateTime, timestamp_Gt: DateTime): MessageNodeConnection!
+}
+
+type MessageNodeConnection {
+  """Pagination data for this connection."""
+  pageInfo: PageInfo!
+
+  """Contains the nodes in this connection."""
+  edges: [MessageNodeEdge]!
+}
+
+"""A Relay edge containing a `MessageNode` and its cursor."""
+type MessageNodeEdge {
+  """The item at the end of the edge"""
+  node: MessageNode
+
+  """A cursor for use in pagination"""
+  cursor: String!
+}
+
+type MessageNode implements Node {
+  """The ID of the object"""
+  id: ID!
+  thread: MessageThreadNode!
+  sender: UserNode!
+  content: String!
+  timestamp: DateTime!
+  read: Boolean!
+  messageattachmentSet(offset: Int, before: String, after: String, first: Int, last: Int, message_Id: ID, fileType: String): MessageAttachmentNodeConnection!
+}
+
+type MessageAttachmentNodeConnection {
+  """Pagination data for this connection."""
+  pageInfo: PageInfo!
+
+  """Contains the nodes in this connection."""
+  edges: [MessageAttachmentNodeEdge]!
+}
+
+"""A Relay edge containing a `MessageAttachmentNode` and its cursor."""
+type MessageAttachmentNodeEdge {
+  """The item at the end of the edge"""
+  node: MessageAttachmentNode
+
+  """A cursor for use in pagination"""
+  cursor: String!
+}
+
+type MessageAttachmentNode implements Node {
+  """The ID of the object"""
+  id: ID!
+  message: MessageNode!
+  file: String!
+  fileName: String!
+  fileType: String!
+}
+
+type ARModelNodeConnection {
+  """Pagination data for this connection."""
+  pageInfo: PageInfo!
+
+  """Contains the nodes in this connection."""
+  edges: [ARModelNodeEdge]!
+}
+
+"""A Relay edge containing a `ARModelNode` and its cursor."""
+type ARModelNodeEdge {
+  """The item at the end of the edge"""
+  node: ARModelNode
+
+  """A cursor for use in pagination"""
+  cursor: String!
+}
+
+type ARModelNode implements Node {
+  """The ID of the object"""
+  id: ID!
+  property: PropertyWithProximityNode!
+  modelUrl: String!
+  scale: Float!
+  anchorType: RealestateARModelAnchorTypeChoices!
+  previewImage: String!
+}
+
+"""An enumeration."""
+enum RealestateARModelAnchorTypeChoices {
+  """Horizontal Plane"""
+  PLANE
+
+  """Image Target"""
+  IMAGE
+
+  """GPS Location"""
+  LOCATION
+}
+
+type PropertyProximityNodeConnection {
+  """Pagination data for this connection."""
+  pageInfo: PageInfo!
+
+  """Contains the nodes in this connection."""
+  edges: [PropertyProximityNodeEdge]!
+}
+
+"""A Relay edge containing a `PropertyProximityNode` and its cursor."""
+type PropertyProximityNodeEdge {
+  """The item at the end of the edge"""
+  node: PropertyProximityNode
+
+  """A cursor for use in pagination"""
+  cursor: String!
+}
+
+type PropertyProximityNode implements Node {
+  """The ID of the object"""
+  id: ID!
+  property: PropertyWithProximityNode!
+  buyer: UserProfileNode!
+  distanceKm: Float!
+  isInPreferredLocation: Boolean!
+  calculatedAt: DateTime!
+}
+
+type ProximityNode implements Node {
+  """The ID of the object"""
+  id: ID!
+  property: PropertyWithProximityNode!
+  buyer: UserProfileNode!
+  distanceKm: Float!
+  isInPreferredLocation: Boolean!
+  calculatedAt: DateTime!
+}
+
+"""Debugging information for the current query."""
+type DjangoDebug {
+  """Executed SQL queries for this API query."""
+  sql: [DjangoDebugSQL]
+
+  """Raise exceptions for this API query."""
+  exceptions: [DjangoDebugException]
+}
+
+"""Represents a single database query made to a Django managed DB."""
+type DjangoDebugSQL {
+  """The type of database being used (e.g. postrgesql, mysql, sqlite)."""
+  vendor: String!
+
+  """The Django database alias (e.g. 'default')."""
+  alias: String!
+
+  """The actual SQL sent to this database."""
+  sql: String
+
+  """Duration of this database query in seconds."""
+  duration: Float!
+
+  """The raw SQL of this query, without params."""
+  rawSql: String!
+
+  """JSON encoded database query parameters."""
+  params: String!
+
+  """Start time of this database query."""
+  startTime: Float!
+
+  """Stop time of this database query."""
+  stopTime: Float!
+
+  """Whether this database query took more than 10 seconds."""
+  isSlow: Boolean!
+
+  """Whether this database query was a SELECT."""
+  isSelect: Boolean!
+
+  """Postgres transaction ID if available."""
+  transId: String
+
+  """Postgres transaction status if available."""
+  transStatus: String
+
+  """Postgres isolation level if available."""
+  isoLevel: String
+
+  """Postgres connection encoding if available."""
+  encoding: String
+}
+
+"""Represents a single exception raised."""
+type DjangoDebugException {
+  """The class of the exception"""
+  excType: String!
+
+  """The message of the exception"""
+  message: String!
+
+  """The stack trace"""
+  stack: String!
+}

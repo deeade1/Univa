@@ -1,0 +1,48 @@
+name: Full Stack CI
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_DB: test_db
+          POSTGRES_USER: test_user
+          POSTGRES_PASSWORD: test_pass
+        ports: ['5432:5432']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Python Setup
+        uses: actions/setup-python@v4
+        with:
+          python-version: 3.11
+
+      - name: Install backend deps
+        run: |
+          cd apps/backend
+          pip install -r requirements.txt
+          pip install pytest pytest-django factory-boy
+
+      - name: Run backend tests
+        env:
+          DATABASE_URL: postgres://test_user:test_pass@localhost:5432/test_db
+        run: |
+          cd apps/backend
+          python manage.py migrate
+          pytest tests/ -v
+
+      - name: Node Setup
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: JS deps + tests
+        run: |
+          cd apps/Univa
+          npm ci
+          npm test -- --passWithNoTests

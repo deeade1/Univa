@@ -1,0 +1,91 @@
+.loader.simple-loader {
+  background-color: $body-bg;
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 0.4s ease, visibility 0.4s ease;
+
+  &.fade-out {
+    opacity: 0;
+    visibility: hidden;
+  }
+
+  .loader-body {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+}
+
+
+/* WhatsApp floating button */
+.chatbot {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 1000;
+
+  opacity: 0;
+  transform: translateY(20px);
+  transition: opacity 0.4s ease, transform 0.4s ease;
+
+  &.show {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  img {
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.15);
+    transition: transform 0.2s ease;
+
+    &:hover {
+      transform: scale(1.1);
+    }
+  }
+}
+
+/* Back to Top Button */
+.back-to-top {
+  position: fixed;
+  bottom: 80px;
+  right: 20px;
+  z-index: 1000;
+
+  width: 45px;
+  height: 45px;
+  border-radius: 50%;
+  background-color: $primary;
+  color: $white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(20px);
+  transition: opacity 0.4s ease, visibility 0.4s ease, transform 0.4s ease;
+
+  &.show {
+    opacity: 1;
+    visibility: visible;
+    transform: translateY(0);
+  }
+
+  svg {
+    fill: currentColor;
+    width: 18px;
+    height: 18px;
+  }
+
+  &:hover {
+    background-color: darken($primary, 8%);
+  }
+}

@@ -1,0 +1,29 @@
+# Add these to your existing .dockerignore
+.git/
+.github/
+.cache/
+.idea/
+.vscode/
+*.tar.gz
+*.zip
+*.tar
+.DS_Store
+Thumbs.db
+
+# Development files
+docker-compose.override.yml
+docker-compose.dev.yml
+docker-compose.test.yml
+
+# Test and documentation
+tests/
+test/
+testing/
+docs/
+documentation/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+.coverage

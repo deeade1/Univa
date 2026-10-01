@@ -1,0 +1,191 @@
+services:
+  db:
+    image: postgis/postgis:17-3.5
+    container_name: kaz-db
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - kaz-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB} -h localhost || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  redis:
+    image: redis:7-alpine
+    container_name: kaz-redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    networks:
+      - kaz-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  
+  backend:
+    build:
+      context: ./apps/backend
+      dockerfile: Dockerfile.prod
+    container_name: kaz-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    command: >
+      sh -c "
+      if [ \"$DEBUG\" = \"True\" ]; then
+        echo 'Development: Starting with watchgod...'
+        watchgod backend.asgi django --daphne -b 0.0.0.0 -p 8000
+      else
+        echo 'Production: Starting with daphne...'
+        daphne -b 0.0.0.0 -p 8000 backend.asgi:application
+      fi
+      "
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./apps/backend:/app/backend:cached
+      - static_data:/app/backend/static
+      - media_data:/app/backend/media
+      - ./apps/backend/kaz-app-f97c3-firebase-adminsdk-fbsvc-2ce9137482.json:/app/backend/kaz-app-f97c3-firebase-adminsdk-fbsvc-2ce9137482.json:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - kaz-network
+
+  celery-worker:
+    container_name: kaz-celery-worker
+    restart: unless-stopped
+    env_file:
+      - .env
+    command: celery -A backend worker -l info --concurrency=4
+    volumes:
+      - ./apps/backend:/app/backend:cached
+      - ./apps/backend/kaz-app-f97c3-firebase-adminsdk-fbsvc-2ce9137482.json:/app/backend/kaz-app-f97c3-firebase-adminsdk-fbsvc-2ce9137482.json:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - kaz-network
+
+  celery-beat:
+    container_name: kaz-celery-beat
+    restart: unless-stopped
+    env_file:
+      - .env
+    command: celery -A backend beat -l info
+    volumes:
+      - ./apps/backend:/app/backend:cached
+      - ./apps/backend/kaz-app-f97c3-firebase-adminsdk-fbsvc-2ce9137482.json:/app/backend/kaz-app-f97c3-firebase-adminsdk-fbsvc-2ce9137482.json:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_started
+    networks:
+      - kaz-network
+
+  flower:
+    image: mher/flower:1.2.0
+    container_name: kaz-flower
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "5555:5555"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - kaz-network
+
+  nginx:
+    build:
+      context: ./apps/frontend 
+      dockerfile: Dockerfile
+      args:
+        VITE_GRAPHQL_HTTP_URI: "http://kaz-backend:8001/graphql"
+        VITE_GRAPHQL_WS_URI: "ws://kaz-backend:8001/graphql"
+        VITE_APP_NAME: "KazSite"
+        NODE_ENV: "production"
+    container_name: kaz-nginx
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    volumes:
+      - static_data:/app/backend/static
+      - media_data:/app/backend/media
+      - ./apps/frontend/nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - kaz-network
+
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: prometheus
+    restart: unless-stopped
+    volumes:
+      - ./deploy/prometheus:/etc/prometheus:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - kaz-network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    restart: unless-stopped
+    user: "472"
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks:
+      - kaz-network
+    depends_on:
+      - prometheus
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: cadvisor
+    ports:
+      - "8081:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    networks:
+      - kaz-network
+
+volumes:
+  postgres_data:
+  redis_data:
+  static_data:
+  media_data:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  kaz-network:
+    driver: bridge

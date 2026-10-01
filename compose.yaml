@@ -1,0 +1,107 @@
+services:
+  redis:
+    image: redis:7.4.3-alpine
+    container_name: redis
+    ports:
+      - "6380:6379"
+    networks:
+      - kaz-network
+
+  kaz-db:
+    image: postgis/postgis:17-3.5
+    container_name: kaz-db
+    ports:
+      - "5432:5432"
+    env_file:
+      - .env.db
+    volumes:
+      - kaz-db-data:/var/lib/postgresql/data
+    networks:
+      - kaz-network
+
+  kaz-backend:
+    build:
+      context: ./apps/backend
+      dockerfile: Dockerfile
+    container_name: kaz-backend
+    env_file:
+      - .env.dev
+    environment:
+      DJANGO_SETTINGS_MODULE: backend.settings.dev
+      PYTHONPATH: /app/backend
+      PORT: "8001"
+    depends_on:
+      - kaz-db
+      - redis
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./apps/backend:/app/backend   # ✅ hot reload
+      - ./media:/app/backend/media
+      - ./static:/app/backend/staticfiles
+      - ./apps/backend/firebase.json:/app/backend/firebase-credentials.json
+    networks:
+      - kaz-network
+
+  kaz-nginx:
+    build:
+      context: .
+      dockerfile: apps/frontend/Dockerfile
+    container_name: kaz-nginx
+    ports:
+      - "8080:80"
+    volumes:
+      - ./media:/app/backend/media
+      - ./static:/usr/share/nginx/html/static
+      - ./apps/nginx/nginx.conf:/etc/nginx/conf.d/default.conf
+    depends_on:
+      - kaz-backend
+    networks:
+      - kaz-network
+
+  celery-worker:
+    build:
+      context: ./apps/backend
+      dockerfile: Dockerfile
+    container_name: celery-worker
+    command: celery -A backend.celeryconfig worker --loglevel=info --concurrency=4
+    env_file:
+      - .env.dev
+    environment:
+      DJANGO_SETTINGS_MODULE: backend.settings.dev
+    volumes:
+      - ./apps/backend:/app/backend   # ✅ hot reload
+      - ./apps/backend/firebase.json:/app/backend/firebase-credentials.json
+    depends_on:
+      - redis
+      - kaz-backend
+    networks:
+      - kaz-network
+
+  flower:
+    build:
+      context: ./apps/backend
+      dockerfile: Dockerfile
+    container_name: flower
+    command: celery -A backend.celeryconfig flower --port=5555
+    ports:
+      - "5556:5555"
+    env_file:
+      - .env.dev
+    volumes:
+      - ./apps/backend:/app/backend   # ✅ hot reload
+      - ./apps/backend/firebase.json:/app/backend/firebase-credentials.json
+    depends_on:
+      - redis
+      - celery-worker
+    networks:
+      - kaz-network
+
+volumes:
+  kaz-db-data:
+  media:
+  static:
+
+networks:
+  kaz-network:
+    driver: bridge

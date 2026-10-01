@@ -1,0 +1,6 @@
+scrape_configs:
+  # ... other configurations
+  - job_name: 'django_app'
+    static_configs:
+      - targets: ['localhost:8000']
+

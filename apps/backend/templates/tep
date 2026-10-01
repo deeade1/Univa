@@ -1,0 +1,63 @@
+<!-- templates/emails/new_property.html -->
+<!DOCTYPE html>
+<html>
+<head>
+    <title>New Property Alert</title>
+</head>
+<body>
+    <h2>New Property Matching Your Criteria</h2>
+    <p>Hello {{ user.first_name }},</p>
+    
+    <p>A new property has been listed that matches your subscription:</p>
+    
+    <div style="border: 1px solid #ddd; padding: 15px; margin: 15px 0;">
+        <h3>{{ notification.property_title }}</h3>
+        <p><strong>Type:</strong> {{ notification.property_type }}</p>
+        <p><strong>Price:</strong> ${{ notification.price }}</p>
+        <a href="{{ notification.url }}" style="background-color: #4CAF50; color: white; padding: 10px 15px; text-decoration: none; border-radius: 4px;">
+            View Property
+        </a>
+    </div>
+    
+    <p>You're receiving this email because you subscribed to property alerts.</p>
+    <p><a href="{{ settings.FRONTEND_URL }}/account/notifications">Manage your notification preferences</a></p>
+</body>
+</html>
+
+
+
+<!-- templates/emails/updated_property.html -->
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Property Update Alert</title>
+</head>
+<body>
+    <h2>Property Update Notification</h2>
+    <p>Hello {{ user.first_name }},</p>
+    
+    <p>A property you're subscribed to has been updated:</p>
+    
+    <div style="border: 1px solid #ddd; padding: 15px; margin: 15px 0;">
+        <h3>{{ notification.property_title }}</h3>
+        <p><strong>Type:</strong> {{ notification.property_type }}</p>
+        <p><strong>Price:</strong> ${{ notification.price }}</p>
+        
+        {% if notification.changed_fields %}
+        <h4>Changes:</h4>
+        <ul>
+            {% for field, values in notification.changed_fields.items %}
+            <li><strong>{{ field|title }}:</strong> Changed from {{ values.old }} to {{ values.new }}</li>
+            {% endfor %}
+        </ul>
+        {% endif %}
+        
+        <a href="{{ notification.url }}" style="background-color: #4CAF50; color: white; padding: 10px 15px; text-decoration: none; border-radius: 4px;">
+            View Updated Property
+        </a>
+    </div>
+    
+    <p>You're receiving this email because you subscribed to property alerts.</p>
+    <p><a href="{{ settings.FRONTEND_URL }}/account/notifications">Manage your notification preferences</a></p>
+</body>
+</html>

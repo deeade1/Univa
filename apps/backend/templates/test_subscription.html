@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>GraphQL Subscription Test</title>
+    <script src="https://unpkg.com/graphql-ws/umd/graphql-ws.min.js"></script>
+</head>
+<body>
+    <h1>GraphQL Subscription Test - Debug</h1>
+    
+    <div>
+        <button onclick="testHttpConnection()">Test HTTP First</button>
+        <button onclick="connectWebSocket()">Connect WebSocket</button>
+        <button onclick="testSimpleSubscription()">Test Simple Sub</button>
+        <button onclick="checkServerConfig()">Check Server Config</button>
+    </div>
+    
+    <div id="status">Status: Ready</div>
+    <div id="messages" style="margin-top: 20px; border: 1px solid #ccc; padding: 10px; height: 300px; overflow-y: scroll;"></div>
+
+    <script>
+        let client = null;
+        const messagesDiv = document.getElementById('messages');
+        const statusDiv = document.getElementById('status');
+
+        function logMessage(message) {
+            const timestamp = new Date().toLocaleTimeString();
+            messagesDiv.innerHTML += `<div>[${timestamp}] ${message}</div>`;
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        async function testHttpConnection() {
+            logMessage('🔍 Testing HTTP GraphQL endpoint...');
+            
+            const endpoints = [
+                '/graphql/',
+                '/graphql',
+                '/api/graphql/',
+                '/api/graphql'
+            ];
+            
+            for (const endpoint of endpoints) {
+                try {
+                    const response = await fetch(endpoint, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            query: '{ test }'
+                        })
+                    });
+                    
+                    const text = await response.text();
+                    logMessage(`📊 ${endpoint}: Status ${response.status}`);
+                    
+                    try {
+                        const json = JSON.parse(text);
+                        logMessage(`✅ ${endpoint}: Valid JSON - ${JSON.stringify(json)}`);
+                        return endpoint; // Found working endpoint
+                    } catch (e) {
+                        logMessage(`❌ ${endpoint}: Not JSON - ${text.substring(0, 100)}...`);
+                    }
+                    
+                } catch (error) {
+                    logMessage(`❌ ${endpoint}: Fetch error - ${error.message}`);
+                }
+            }
+            
+            logMessage('💥 No working HTTP GraphQL endpoint found!');
+            return null;
+        }
+
+        async function connectWebSocket() {
+            logMessage('🔌 Testing WebSocket connections...');
+            
+            const wsUrls = [
+                'ws://127.0.0.1:8000/graphql/',
+                'ws://127.0.0.1:8000/graphql',
+                'ws://localhost:8000/graphql/',
+                'ws://localhost:8000/graphql'
+            ];
+            
+            for (const url of wsUrls) {
+                try {
+                    logMessage(`🔄 Trying ${url}...`);
+                    
+                    client = graphqlWs.createClient({
+                        url: url,
+                        connectionParams: () => ({}),
+                        on: {
+                            connected: () => {
+                                logMessage(`✅ Connected to ${url}`);
+                                statusDiv.textContent = `Status: Connected to ${url}`;
+                            },
+                            error: (error) => {
+                                logMessage(`❌ ${url} error: ${error.message || JSON.stringify(error)}`);
+                            },
+                            closed: () => {
+                                logMessage(`🔌 ${url} closed`);
+                            },
+                        },
+                    });
+                    
+                    // Test connection with timeout
+                    setTimeout(() => {
+                        if (statusDiv.textContent.includes('Connected')) {
+                            logMessage(`🎯 ${url} is working!`);
+                        }
+                    }, 1000);
+                    
+                    break; // Stop after first successful connection
+                    
+                } catch (error) {
+                    logMessage(`❌ ${url} failed: ${error.message}`);
+                }
+            }
+        }
+
+        async function testSimpleSubscription() {
+            if (!client) {
+                logMessage('❌ No WebSocket connection');
+                return;
+            }
+            
+            logMessage('📡 Testing simple subscription...');
+            
+            // Try multiple subscription queries
+            const testQueries = [
+                // Query 1: Absolute minimal
+                `subscription { __typename }`,
+                
+                // Query 2: Check if subscriptions exist
+                `subscription { 
+                    __schema { 
+                        subscriptionType { 
+                            fields { name } 
+                        } 
+                    } 
+                }`,
+                
+                // Query 3: Try onNewMessage with simple fields
+                `subscription { 
+                    onNewMessage(chatroomIds: ["test"]) { 
+                        chatroomId 
+                    } 
+                }`
+            ];
+            
+            for (let i = 0; i < testQueries.length; i++) {
+                try {
+                    logMessage(`🔍 Testing query ${i + 1}...`);
+                    
+                    const subscription = client.iterate({
+                        query: testQueries[i]
+                    });
+
+                    // Set up message handler
+                    (async () => {
+                        try {
+                            let received = false;
+                            
+                            // Set timeout for this subscription
+                            const timeout = setTimeout(() => {
+                                if (!received) {
+                                    logMessage(`⏰ Query ${i + 1}: No response after 3 seconds`);
+                                    subscription.return();
+                                }
+                            }, 3000);
+                            
+                            for await (const result of subscription) {
+                                received = true;
+                                clearTimeout(timeout);
+                                logMessage(`✅ Query ${i + 1} SUCCESS: ${JSON.stringify(result)}`);
+                                break; // Just test one message
+                            }
+                            
+                        } catch (error) {
+                            logMessage(`❌ Query ${i + 1} iteration error: ${error.message}`);
+                        }
+                    })();
+                    
+                    // Wait a bit between tests
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    
+                } catch (error) {
+                    logMessage(`❌ Query ${i + 1} setup error: ${error.message}`);
+                }
+            }
+        }
+
+        async function checkServerConfig() {
+            logMessage('🔧 Checking server configuration...');
+            
+            // Test if Django is running
+            try {
+                const response = await fetch('/');
+                logMessage(`🏠 Django root: Status ${response.status}`);
+            } catch (error) {
+                logMessage(`❌ Cannot reach Django: ${error.message}`);
+            }
+            
+            // Test admin (should return HTML)
+            try {
+                const response = await fetch('/admin/');
+                logMessage(`⚙️ Admin page: Status ${response.status}`);
+            } catch (error) {
+                logMessage(`❌ Admin unreachable: ${error.message}`);
+            }
+        }
+
+        function disconnect() {
+            if (client) {
+                client.dispose();
+                client = null;
+                logMessage('🔌 Disconnected');
+                statusDiv.textContent = 'Status: Disconnected';
+            }
+        }
+
+        // Auto-test on load
+        window.addEventListener('load', async () => {
+            logMessage('🚀 Starting comprehensive test...');
+            await testHttpConnection();
+            await checkServerConfig();
+        });
+    </script>
+</body>
+</html>

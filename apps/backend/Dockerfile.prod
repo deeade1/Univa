@@ -1,0 +1,99 @@
+# ===============================
+#   Base Image
+# ===============================
+ARG PYTHON_VERSION=3.12.3-bookworm
+FROM python:${PYTHON_VERSION} as base
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    DEBIAN_FRONTEND=noninteractive \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYDEVD_DISABLE_FILE_VALIDATION=1
+
+WORKDIR /app/backend
+
+# ===============================
+#   Builder Stage
+# ===============================
+FROM base as builder
+
+# Install system dependencies in one layer
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
+    libpq-dev \
+    libgeos-dev \
+    libproj-dev \
+    libgdal-dev \
+    gdal-bin \
+    libopenblas-dev \
+    libjpeg-dev \
+    libtiff-dev \
+    libgl1 \
+    libglib2.0-0 \
+    ffmpeg \
+    netcat-traditional \
+    postgresql-client \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Copy only requirements first for better caching
+COPY requirements.txt .
+
+# Install Python dependencies in layers
+RUN pip install --upgrade pip
+
+# Install heavy dependencies first with retry
+RUN pip install --no-cache-dir --retries 3 --timeout 60 \
+    tensorflow-cpu==2.16.2 \
+    deepface==0.0.89
+
+RUN pip install --no-cache-dir --retries 3 --timeout 60 \
+    opencv-python-headless==4.9.0.80 \
+    gunicorn==21.2.0
+
+# Install remaining requirements
+RUN pip wheel --wheel-dir /wheels --no-cache-dir --retries 3 -r requirements.txt
+
+# ===============================
+#   Final Runtime Stage
+# ===============================
+FROM base
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 \
+    libjpeg62-turbo \
+    libtiff6 \
+    libgl1 \
+    libglib2.0-0 \
+    ffmpeg \
+    netcat-traditional \
+    postgresql-client \
+    gdal-bin \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Copy wheels and install
+COPY --from=builder /wheels /wheels
+RUN pip install --no-index --find-links=/wheels /wheels/* \
+    && rm -rf /wheels \
+    && rm -rf /root/.cache/pip
+
+# Create non-root user
+RUN groupadd -g 1001 app && \
+    useradd -u 1001 -g app -d /app/backend -s /bin/bash app && \
+    mkdir -p /app/backend/static /app/backend/media && \
+    chown -R app:app /app/backend
+
+# Copy application code
+COPY --chown=app:app . .
+
+# Verify entrypoint exists and is executable
+RUN if [ ! -f "/app/backend/entrypoint.prod.sh" ]; then echo "Entrypoint not found!" && exit 1; fi && \
+    chmod +x /app/backend/entrypoint.prod.sh
+
+USER app
+
+ENTRYPOINT ["/app/backend/entrypoint.prod.sh"]
