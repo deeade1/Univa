@@ -538,8 +538,10 @@ class PaymentExecutionSynchronizationTests(TestCase):
         )
 
     def test_cancelled_payment_rejects_processing_execution(self):
-        self.payment = PaymentLifecycle.mark_cancelled(
-            self.payment
+        self.payment.status = Payment.Status.CANCELLED
+        self.payment.cancelled_at = self.payment.created_at
+        self.payment.save(
+            update_fields=["status", "cancelled_at", "updated_at"]
         )
 
         self.set_execution_status(
@@ -562,11 +564,15 @@ class PaymentExecutionSynchronizationTests(TestCase):
         self.payment = PaymentLifecycle.mark_processing(
             self.payment
         )
+
         self.payment = PaymentLifecycle.mark_completed(
             self.payment
         )
-        self.payment = PaymentLifecycle.mark_reversed(
-            self.payment
+
+        self.payment.status = Payment.Status.REVERSED
+        self.payment.reversed_at = self.payment.created_at
+        self.payment.save(
+            update_fields=["status", "reversed_at", "updated_at"]
         )
 
         self.set_execution_status(
@@ -584,7 +590,7 @@ class PaymentExecutionSynchronizationTests(TestCase):
             self.payment.status,
             Payment.Status.REVERSED,
         )
-
+ 
     def test_synchronization_is_atomic_when_payment_transition_fails(self):
         self.set_execution_status(
             PaymentExecution.Status.COMPLETED
