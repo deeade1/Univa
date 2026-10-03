@@ -3,4 +3,6 @@ from django.apps import AppConfig
 
 class EcommerceConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
-    name = "ecommerce"
+    name = "ecommerce" 
+    def ready(self):
+        from ecommerce import signals  # noqa: F401

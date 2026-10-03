@@ -1,7 +1,44 @@
 ﻿# apps/backend/ecommerce/models/order.py
 
+"""
+Order models for Univa.
+
+Core entities:
+
+    Order                   — a purchase (from checkout, draft, etc.)
+    OrderLine               — a line item on an order
+    Fulfillment             — a shipment or pickup
+    FulfillmentLine         — a line within a fulfillment
+    OrderEvent              — audit trail of state changes
+    OrderGrantedRefund      — a refund granted to a customer
+    OrderGrantedRefundLine  — a line within a granted refund
+    OrderTrackingEvent      — real-time tracking events
+
+Design notes:
+
+  * `OrderLine.quantity` is Decimal — supports weighted market items
+    (2.5 kg of beef) as well as discrete catalog items.
+
+  * `OrderLine.quantity_unit` is denormalized from the variant at
+    checkout so historical orders preserve their unit even if the
+    variant changes.
+
+  * Money is stored as paired `*_amount` DecimalField + `currency`
+    CharField and exposed as `MoneyField` / `TaxedMoneyField`
+    descriptors from `core.pricing`.
+
+  * The `Invoice` for an order lives in the `invoice` app, which
+    holds a `ForeignKey` back to `Order`. This module does NOT
+    import or reference Invoice.
+
+  * Fields removed in Phase 8.B (analytics, fraud, CEM, ESG) belong
+    in dedicated satellite models, not on Order itself. See git
+    history for what they were.
+"""
+
+from __future__ import annotations
+
 from decimal import Decimal
-from operator import attrgetter
 from re import match
 from typing import TYPE_CHECKING, Optional
 from uuid import uuid4
@@ -11,24 +48,25 @@ from django.contrib.postgres.fields import ArrayField
 from django.contrib.postgres.indexes import BTreeIndex, GinIndex
 from django.contrib.postgres.search import SearchVectorField
 from django.core.validators import MinValueValidator
-from django.db import connection, models, transaction
+from django.db import models, transaction
 from django.db.models import F, JSONField, Max, Q
-from django.db.models.expressions import Exists, OuterRef
 from django.utils.timezone import now
 from django_measurement.models import MeasurementField
 from measurement.measures import Weight
 
+from core.models.metadata import (
+    ModelWithExternalReference,
+    ModelWithMetadata,
+)
+from core.models.utils.json_serializer import CustomJsonEncoder
+from core.pricing import Money, MoneyField, TaxedMoneyField
+from core.pricing.quantity_unit import QuantityUnit
+from core.units import WeightUnits
+from core.weight import zero_weight
 from ecommerce.models.channel import Channel
 from ecommerce.models.discount import Voucher
 from ecommerce.models.giftcard import GiftCard
 from ecommerce.models.shipping import ShippingMethod
-
-from core.models.metadata import ModelWithExternalReference, ModelWithMetadata
-from core.models.utils.json_serializer import CustomJsonEncoder
-from core.pricing import MoneyField, TaxedMoneyField
-from core.units import WeightUnits
-from core.weight import zero_weight
-
 from payment.constants import ChargeStatus, TransactionKind
 from payment.model_helpers import get_subtotal
 from payment.models import Payment
@@ -46,6 +84,11 @@ from .constants import (
 
 if TYPE_CHECKING:
     from accounts.models import User
+
+
+# =====================================================================
+# ORDER QUERYSET
+# =====================================================================
 
 
 class OrderQueryset(models.QuerySet["Order"]):
@@ -158,12 +201,13 @@ class OrderQueryset(models.QuerySet["Order"]):
 OrderManager = models.Manager.from_queryset(OrderQueryset)
 
 
-def get_order_number():
+def get_order_number() -> int:
     """
     Generate the next order number.
 
-    The import is intentionally local so model initialization does not
-    create a circular import.
+    Uses SELECT FOR UPDATE on the last order row to serialize
+    concurrent assignments. The import is local to avoid a
+    circular import at module load.
     """
     from .order import Order
 
@@ -179,8 +223,19 @@ def get_order_number():
         return (last_order.number + 1) if last_order else 1
 
 
+# =====================================================================
+# ORDER
+# =====================================================================
+
+
 class Order(ModelWithMetadata, ModelWithExternalReference):
-    """Customer order."""
+    """
+    Customer order.
+
+    A single Order can mix catalog items ("iPhone 15") and market
+    items ("2.5 kg of beef") because OrderLine.quantity is Decimal
+    and OrderLine.quantity_unit records the unit.
+    """
 
     id = models.UUIDField(
         primary_key=True,
@@ -194,8 +249,6 @@ class Order(ModelWithMetadata, ModelWithExternalReference):
         default=get_order_number,
         editable=False,
     )
-
-    use_old_id = models.BooleanField(default=False)
 
     created_at = models.DateTimeField(
         default=now,
@@ -214,6 +267,10 @@ class Order(ModelWithMetadata, ModelWithExternalReference):
         null=True,
         db_index=True,
     )
+
+    # ------------------------------------------------------------------
+    # Status
+    # ------------------------------------------------------------------
 
     status = models.CharField(
         max_length=32,
@@ -235,6 +292,16 @@ class Order(ModelWithMetadata, ModelWithExternalReference):
         choices=OrderChargeStatus.CHOICES,
         db_index=True,
     )
+
+    origin = models.CharField(
+        max_length=32,
+        choices=OrderOrigin.CHOICES,
+        db_index=True,
+    )
+
+    # ------------------------------------------------------------------
+    # Customer
+    # ------------------------------------------------------------------
 
     user = models.ForeignKey(
         "accounts.User",
@@ -263,6 +330,10 @@ class Order(ModelWithMetadata, ModelWithExternalReference):
         editable=False,
     )
 
+    # ------------------------------------------------------------------
+    # Addresses
+    # ------------------------------------------------------------------
+
     billing_address = models.ForeignKey(
         "accounts.Address",
         related_name="+",
@@ -287,9 +358,14 @@ class Order(ModelWithMetadata, ModelWithExternalReference):
         db_index=True,
     )
 
-    origin = models.CharField(
-        max_length=32,
-        choices=OrderOrigin.CHOICES,
+    # ------------------------------------------------------------------
+    # Channel and shipping
+    # ------------------------------------------------------------------
+
+    channel = models.ForeignKey(
+        Channel,
+        related_name="orders",
+        on_delete=models.PROTECT,
         db_index=True,
     )
 
@@ -330,10 +406,9 @@ class Order(ModelWithMetadata, ModelWithExternalReference):
         editable=False,
     )
 
-    channel = models.ForeignKey(
-        Channel,
-        related_name="orders",
-        on_delete=models.PROTECT,
+    checkout_token = models.CharField(
+        max_length=36,
+        blank=True,
         db_index=True,
     )
 
@@ -344,7 +419,7 @@ class Order(ModelWithMetadata, ModelWithExternalReference):
     shipping_price_net_amount = models.DecimalField(
         max_digits=settings.DEFAULT_MAX_DIGITS,
         decimal_places=settings.DEFAULT_DECIMAL_PLACES,
-        default=Decimal("0.0"),
+        default=Decimal("0"),
         editable=False,
     )
 
@@ -356,7 +431,7 @@ class Order(ModelWithMetadata, ModelWithExternalReference):
     shipping_price_gross_amount = models.DecimalField(
         max_digits=settings.DEFAULT_MAX_DIGITS,
         decimal_places=settings.DEFAULT_DECIMAL_PLACES,
-        default=Decimal("0.0"),
+        default=Decimal("0"),
         editable=False,
     )
 
@@ -374,7 +449,7 @@ class Order(ModelWithMetadata, ModelWithExternalReference):
     base_shipping_price_amount = models.DecimalField(
         max_digits=settings.DEFAULT_MAX_DIGITS,
         decimal_places=settings.DEFAULT_DECIMAL_PLACES,
-        default=Decimal("0.0"),
+        default=Decimal("0"),
     )
 
     base_shipping_price = MoneyField(
@@ -385,13 +460,17 @@ class Order(ModelWithMetadata, ModelWithExternalReference):
     undiscounted_base_shipping_price_amount = models.DecimalField(
         max_digits=settings.DEFAULT_MAX_DIGITS,
         decimal_places=settings.DEFAULT_DECIMAL_PLACES,
-        default=Decimal("0.0"),
+        default=Decimal("0"),
     )
 
     undiscounted_base_shipping_price = MoneyField(
         amount_field="undiscounted_base_shipping_price_amount",
         currency_field="currency",
     )
+
+    # ------------------------------------------------------------------
+    # Tax (shipping)
+    # ------------------------------------------------------------------
 
     shipping_tax_rate = models.DecimalField(
         max_digits=5,
@@ -427,26 +506,20 @@ class Order(ModelWithMetadata, ModelWithExternalReference):
         encoder=CustomJsonEncoder,
     )
 
-    checkout_token = models.CharField(
-        max_length=36,
-        blank=True,
-        db_index=True,
-    )
-
     # ------------------------------------------------------------------
-    # Total prices
+    # Totals
     # ------------------------------------------------------------------
 
     total_net_amount = models.DecimalField(
         max_digits=settings.DEFAULT_MAX_DIGITS,
         decimal_places=settings.DEFAULT_DECIMAL_PLACES,
-        default=Decimal("0.0"),
+        default=Decimal("0"),
     )
 
     undiscounted_total_net_amount = models.DecimalField(
         max_digits=settings.DEFAULT_MAX_DIGITS,
         decimal_places=settings.DEFAULT_DECIMAL_PLACES,
-        default=Decimal("0.0"),
+        default=Decimal("0"),
     )
 
     total_net = MoneyField(
@@ -462,13 +535,13 @@ class Order(ModelWithMetadata, ModelWithExternalReference):
     total_gross_amount = models.DecimalField(
         max_digits=settings.DEFAULT_MAX_DIGITS,
         decimal_places=settings.DEFAULT_DECIMAL_PLACES,
-        default=Decimal("0.0"),
+        default=Decimal("0"),
     )
 
     undiscounted_total_gross_amount = models.DecimalField(
         max_digits=settings.DEFAULT_MAX_DIGITS,
         decimal_places=settings.DEFAULT_DECIMAL_PLACES,
-        default=Decimal("0.0"),
+        default=Decimal("0"),
     )
 
     total_gross = MoneyField(
@@ -500,13 +573,13 @@ class Order(ModelWithMetadata, ModelWithExternalReference):
     total_charged_amount = models.DecimalField(
         max_digits=settings.DEFAULT_MAX_DIGITS,
         decimal_places=settings.DEFAULT_DECIMAL_PLACES,
-        default=Decimal("0.0"),
+        default=Decimal("0"),
     )
 
     total_authorized_amount = models.DecimalField(
         max_digits=settings.DEFAULT_MAX_DIGITS,
         decimal_places=settings.DEFAULT_DECIMAL_PLACES,
-        default=Decimal("0.0"),
+        default=Decimal("0"),
     )
 
     total_authorized = MoneyField(
@@ -568,7 +641,7 @@ class Order(ModelWithMetadata, ModelWithExternalReference):
     )
 
     # ------------------------------------------------------------------
-    # General order information
+    # Customer-facing metadata
     # ------------------------------------------------------------------
 
     display_gross_prices = models.BooleanField(default=True)
@@ -589,6 +662,10 @@ class Order(ModelWithMetadata, ModelWithExternalReference):
         null=True,
     )
 
+    # ------------------------------------------------------------------
+    # Search
+    # ------------------------------------------------------------------
+
     search_document = models.TextField(
         blank=True,
         default="",
@@ -598,6 +675,10 @@ class Order(ModelWithMetadata, ModelWithExternalReference):
         blank=True,
         null=True,
     )
+
+    # ------------------------------------------------------------------
+    # Pricing state
+    # ------------------------------------------------------------------
 
     should_refresh_prices = models.BooleanField(default=True)
 
@@ -610,7 +691,7 @@ class Order(ModelWithMetadata, ModelWithExternalReference):
     )
 
     # ------------------------------------------------------------------
-    # Priority / flags
+    # Order type flags
     # ------------------------------------------------------------------
 
     priority_level = models.IntegerField(
@@ -657,7 +738,7 @@ class Order(ModelWithMetadata, ModelWithExternalReference):
     )
 
     # ------------------------------------------------------------------
-    # Delivery promise
+    # Delivery
     # ------------------------------------------------------------------
 
     promised_delivery_date = models.DateTimeField(
@@ -713,105 +794,16 @@ class Order(ModelWithMetadata, ModelWithExternalReference):
         null=True,
     )
 
-    # ------------------------------------------------------------------
-    # Customer experience
-    # ------------------------------------------------------------------
-
-    customer_satisfaction_score = models.IntegerField(
-        null=True,
-        blank=True,
-    )
-
-    net_promoter_score = models.IntegerField(
-        null=True,
-        blank=True,
-    )
-
-    would_repurchase = models.BooleanField(
-        null=True,
-    )
-
-    review_id = models.CharField(
-        max_length=100,
-        blank=True,
-        db_index=True,
-    )
-
-    # ------------------------------------------------------------------
-    # Fraud / risk
-    # ------------------------------------------------------------------
-
-    fraud_score = models.DecimalField(
-        max_digits=5,
-        decimal_places=2,
-        null=True,
-    )
-
-    fraud_risk_level = models.CharField(
-        max_length=20,
-        blank=True,
-    )
-
-    requires_manual_review = models.BooleanField(
-        default=False,
-    )
-
-    reviewed_by_fraud_team = models.BooleanField(
-        default=False,
-    )
-
-    # ------------------------------------------------------------------
-    # Analytics / attribution
-    # ------------------------------------------------------------------
-
-    acquisition_channel = models.CharField(
-        max_length=100,
-        blank=True,
-    )
-
-    campaign_id = models.CharField(
-        max_length=100,
-        blank=True,
-        db_index=True,
-    )
-
-    attribution_model = models.CharField(
-        max_length=50,
-        blank=True,
-    )
-
-    lifetime_value = models.DecimalField(
-        max_digits=12,
-        decimal_places=2,
-        null=True,
-        blank=True,
-    )
-
-    # ------------------------------------------------------------------
-    # Environmental impact
-    # ------------------------------------------------------------------
-
-    carbon_footprint_kg = models.DecimalField(
-        max_digits=10,
-        decimal_places=2,
-        null=True,
-    )
-
-    is_carbon_neutral = models.BooleanField(
-        default=False,
-    )
-
     objects = OrderManager()
 
     class Meta:
         ordering = ("-number",)
-
         permissions = (
             ("manage_orders", "Manage orders."),
             ("manage_orders_import", "Manage orders import."),
         )
-
         indexes = [
+            # Search
             GinIndex(
                 name="order_search_gin",
                 fields=["search_document"],
@@ -821,44 +813,49 @@ class Order(ModelWithMetadata, ModelWithExternalReference):
                 name="order_tsearch",
                 fields=["search_vector"],
             ),
-            BTreeIndex(
-                fields=["created_at"],
-                name="order_created_at_idx",
+            # Storefront / admin queries
+            models.Index(
+                fields=["user", "-created_at"],
+                name="order_user_created_idx",
             ),
-            BTreeIndex(
-                fields=["status"],
-                name="order_status_idx",
+            models.Index(
+                fields=["channel", "status", "-created_at"],
+                name="order_channel_status_idx",
             ),
-            BTreeIndex(
-                fields=["user_email"],
-                name="order_user_email_idx",
+            models.Index(
+                fields=["status", "-created_at"],
+                name="order_status_created_idx",
             ),
-            BTreeIndex(
-                fields=["checkout_token"],
-                name="order_checkout_token_idx",
-            ),
-            BTreeIndex(
-                fields=["voucher_code"],
-                name="order_voucher_code_idx",
-            ),
+            # Operational
             BTreeIndex(
                 fields=["created_at", "status"],
                 name="order_created_status_idx",
             ),
             BTreeIndex(
                 fields=["priority_level", "created_at"],
+                name="order_priority_idx",
             ),
             BTreeIndex(
                 fields=["is_prime", "status"],
+                name="order_prime_status_idx",
             ),
             BTreeIndex(
                 fields=["promised_delivery_date", "status"],
+                name="order_promised_status_idx",
             ),
-            BTreeIndex(
-                fields=["fraud_score", "created_at"],
+        ]
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(number__gt=0),
+                name="order_number_positive",
             ),
-            BTreeIndex(
-                fields=["acquisition_channel", "created_at"],
+            models.CheckConstraint(
+                condition=Q(total_gross_amount__gte=0),
+                name="order_total_gross_non_negative",
+            ),
+            models.CheckConstraint(
+                condition=Q(total_net_amount__gte=0),
+                name="order_total_net_non_negative",
             ),
         ]
 
@@ -866,12 +863,22 @@ class Order(ModelWithMetadata, ModelWithExternalReference):
         return f"#{self.id}"
 
     def save(self, *args, **kwargs):
-        """Update the search document before saving."""
-        if (
-            not self.pk
-            or "update_fields" not in kwargs
-            or "search_document" in kwargs["update_fields"]
-        ):
+        """
+        Persist the order.
+
+        The search document is rebuilt only when:
+          * the object is new, or
+          * the caller explicitly included 'search_document' in
+            update_fields.
+
+        This avoids recomputing (and rewriting) the search blob on
+        every state change.
+        """
+        update_fields = kwargs.get("update_fields")
+
+        if self._state.adding:
+            self.update_search_document()
+        elif update_fields and "search_document" in update_fields:
             self.update_search_document()
 
         super().save(*args, **kwargs)
@@ -884,7 +891,7 @@ class Order(ModelWithMetadata, ModelWithExternalReference):
             self.customer_note,
         ]
 
-        if self.user:
+        if self.user_id:
             parts.extend(
                 [
                     self.user.email,
@@ -893,15 +900,16 @@ class Order(ModelWithMetadata, ModelWithExternalReference):
                 ]
             )
 
-        if self.billing_address:
+        if self.billing_address_id:
+            addr = self.billing_address
             parts.extend(
                 [
-                    self.billing_address.first_name,
-                    self.billing_address.last_name,
-                    self.billing_address.street_address_1,
-                    self.billing_address.street_address_2,
-                    self.billing_address.city,
-                    self.billing_address.postal_code,
+                    addr.first_name,
+                    addr.last_name,
+                    addr.street_address_1,
+                    addr.street_address_2,
+                    addr.city,
+                    addr.postal_code,
                 ]
             )
 
@@ -909,20 +917,43 @@ class Order(ModelWithMetadata, ModelWithExternalReference):
             part for part in parts if part
         )
 
-    def is_fully_paid(self):
-        """Return whether the order has been fully paid."""
+    # ------------------------------------------------------------------
+    # State helpers
+    # ------------------------------------------------------------------
+
+    def is_fully_paid(self) -> bool:
         return self.total_charged_amount >= self.total_gross_amount
 
-    def is_partly_paid(self):
-        """Return whether the order has received any payment."""
+    def is_partly_paid(self) -> bool:
         return self.total_charged_amount > 0
 
-    def get_customer_email(self):
-        """Return the customer's email address."""
+    def is_draft(self) -> bool:
+        return self.status == OrderStatus.DRAFT
+
+    def is_unconfirmed(self) -> bool:
+        return self.status == OrderStatus.UNCONFIRMED
+
+    def is_expired(self) -> bool:
+        return self.status == OrderStatus.EXPIRED
+
+    def is_open(self) -> bool:
+        return self.status in {
+            OrderStatus.UNFULFILLED,
+            OrderStatus.PARTIALLY_FULFILLED,
+        }
+
+    # ------------------------------------------------------------------
+    # Customer
+    # ------------------------------------------------------------------
+
+    def get_customer_email(self) -> str:
         return self.user.email if self.user_id else self.user_email
 
+    # ------------------------------------------------------------------
+    # Payment helpers
+    # ------------------------------------------------------------------
+
     def get_last_payment(self) -> Optional[Payment]:
-        """Return the most recent active payment."""
         if not hasattr(self, "_last_payment"):
             self._last_payment = (
                 self.payments
@@ -930,11 +961,9 @@ class Order(ModelWithMetadata, ModelWithExternalReference):
                 .order_by("-pk")
                 .first()
             )
-
         return self._last_payment
 
-    def is_pre_authorized(self):
-        """Return whether the order has a successful authorization."""
+    def is_pre_authorized(self) -> bool:
         return self.payments.filter(
             is_active=True,
             transactions__kind=TransactionKind.AUTH,
@@ -942,8 +971,7 @@ class Order(ModelWithMetadata, ModelWithExternalReference):
             transactions__is_success=True,
         ).exists()
 
-    def is_captured(self):
-        """Return whether the order has a successful capture."""
+    def is_captured(self) -> bool:
         return self.payments.filter(
             is_active=True,
             transactions__kind=TransactionKind.CAPTURE,
@@ -951,55 +979,63 @@ class Order(ModelWithMetadata, ModelWithExternalReference):
             transactions__is_success=True,
         ).exists()
 
+    def can_capture(self, payment=None) -> bool:
+        if payment is None:
+            payment = self.get_last_payment()
+        if not payment:
+            return False
+        return (
+            payment.can_capture()
+            and self.status not in {
+                OrderStatus.DRAFT,
+                OrderStatus.CANCELED,
+                OrderStatus.EXPIRED,
+            }
+        )
+
+    def can_void(self, payment=None) -> bool:
+        if payment is None:
+            payment = self.get_last_payment()
+        return payment.can_void() if payment else False
+
+    def can_refund(self, payment=None) -> bool:
+        if payment is None:
+            payment = self.get_last_payment()
+        return payment.can_refund() if payment else False
+
+    def can_mark_as_paid(self) -> bool:
+        return not self.payments.exists()
+
+    # ------------------------------------------------------------------
+    # Line helpers
+    # ------------------------------------------------------------------
+
+    def _ensure_lines(self) -> None:
+        if not hasattr(self, "_lines"):
+            self._lines = list(self.lines.all())
+
     def get_subtotal(self):
         """Calculate the subtotal using cached lines."""
-        if not hasattr(self, "_lines"):
-            self._lines = list(self.lines.all())
+        self._ensure_lines()
+        return get_subtotal(self._lines, self.currency)
 
-        return get_subtotal(
-            self._lines,
-            self.currency,
-        )
+    def is_shipping_required(self) -> bool:
+        self._ensure_lines()
+        return any(line.is_shipping_required for line in self._lines)
 
-    def is_shipping_required(self):
-        """Return whether any order line requires shipping."""
-        if not hasattr(self, "_lines"):
-            self._lines = list(self.lines.all())
-
-        return any(
-            line.is_shipping_required
-            for line in self._lines
-        )
-
-    def get_total_quantity(self):
-        """Return total quantity across all order lines."""
-        if not hasattr(self, "_lines"):
-            self._lines = list(self.lines.all())
-
+    def get_total_quantity(self) -> Decimal:
+        """Total quantity across all lines, as Decimal."""
+        self._ensure_lines()
         return sum(
-            line.quantity
-            for line in self._lines
+            (line.quantity for line in self._lines),
+            start=Decimal("0"),
         )
 
-    def is_draft(self):
-        return self.status == OrderStatus.DRAFT
+    # ------------------------------------------------------------------
+    # Cancellation
+    # ------------------------------------------------------------------
 
-    def is_unconfirmed(self):
-        return self.status == OrderStatus.UNCONFIRMED
-
-    def is_expired(self):
-        return self.status == OrderStatus.EXPIRED
-
-    def is_open(self):
-        statuses = {
-            OrderStatus.UNFULFILLED,
-            OrderStatus.PARTIALLY_FULFILLED,
-        }
-
-        return self.status in statuses
-
-    def can_cancel(self):
-        """Return whether the order can be cancelled."""
+    def can_cancel(self) -> bool:
         if self.status in {
             OrderStatus.CANCELED,
             OrderStatus.DRAFT,
@@ -1008,9 +1044,7 @@ class Order(ModelWithMetadata, ModelWithExternalReference):
             return False
 
         if not hasattr(self, "_fulfillments"):
-            self._fulfillments = list(
-                self.fulfillments.all()
-            )
+            self._fulfillments = list(self.fulfillments.all())
 
         allowed_statuses = {
             FulfillmentStatus.CANCELED,
@@ -1021,74 +1055,40 @@ class Order(ModelWithMetadata, ModelWithExternalReference):
         }
 
         return all(
-            fulfillment.status in allowed_statuses
-            for fulfillment in self._fulfillments
+            f.status in allowed_statuses for f in self._fulfillments
         )
 
-    def can_capture(self, payment=None):
-        """Return whether the order can be captured."""
-        if payment is None:
-            payment = self.get_last_payment()
-
-        if not payment:
-            return False
-
-        return (
-            payment.can_capture()
-            and self.status not in {
-                OrderStatus.DRAFT,
-                OrderStatus.CANCELED,
-                OrderStatus.EXPIRED,
-            }
-        )
-
-    def can_void(self, payment=None):
-        """Return whether the order can be voided."""
-        if payment is None:
-            payment = self.get_last_payment()
-
-        return payment.can_void() if payment else False
-
-    def can_refund(self, payment=None):
-        """Return whether the order can be refunded."""
-        if payment is None:
-            payment = self.get_last_payment()
-
-        return payment.can_refund() if payment else False
-
-    def can_mark_as_paid(self):
-        """Return whether the order can be manually marked as paid."""
-        return not self.payments.exists()
+    # ------------------------------------------------------------------
+    # Money
+    # ------------------------------------------------------------------
 
     @property
-    def total_balance(self):
-        """Return the current payment balance."""
+    def total_balance(self) -> Money:
         return Money(
-            amount=(
-                self.total_charged_amount
-                - self.total_gross_amount
-            ),
+            amount=(self.total_charged_amount - self.total_gross_amount),
             currency=self.currency,
         )
 
 
+# =====================================================================
+# ORDER LINE
+# =====================================================================
+
+
 class OrderLineQueryset(models.QuerySet["OrderLine"]):
     def digital(self):
-        """Return digital order lines."""
         return self.filter(
             variant__is_digital=True,
             variant__digital_content__isnull=False,
         )
 
     def physical(self):
-        """Return physical order lines."""
         return self.filter(
             Q(variant__is_digital=False)
             | Q(variant__digital_content__isnull=True)
         )
 
     def with_related_data(self):
-        """Return order lines with related product data."""
         return self.select_related(
             "variant",
             "variant__product",
@@ -1135,9 +1135,7 @@ class OrderLine(ModelWithMetadata):
         db_index=True,
     )
 
-    product_name = models.CharField(
-        max_length=386,
-    )
+    product_name = models.CharField(max_length=386)
 
     variant_name = models.CharField(
         max_length=255,
@@ -1170,27 +1168,42 @@ class OrderLine(ModelWithMetadata):
         blank=True,
     )
 
-    is_shipping_required = models.BooleanField(
+    is_shipping_required = models.BooleanField(db_index=True)
+    is_gift_card = models.BooleanField(db_index=True)
+    is_gift = models.BooleanField(default=False, db_index=True)
+
+    # ------------------------------------------------------------------
+    # Quantity
+    # ------------------------------------------------------------------
+
+    quantity = models.DecimalField(
+        max_digits=12,
+        decimal_places=3,
+        validators=[MinValueValidator(Decimal("0.001"))],
+    )
+
+    quantity_fulfilled = models.DecimalField(
+        max_digits=12,
+        decimal_places=3,
+        default=Decimal("0"),
+        validators=[MinValueValidator(Decimal("0"))],
+    )
+
+    quantity_unit = models.CharField(
+        max_length=16,
+        choices=QuantityUnit.choices(),
+        default=QuantityUnit.UNIT.value,
         db_index=True,
+        help_text=(
+            "Unit of measure for this line. Denormalized from the "
+            "variant at checkout time so historical orders preserve "
+            "their unit even if the variant changes."
+        ),
     )
 
-    is_gift_card = models.BooleanField(
-        db_index=True,
-    )
-
-    is_gift = models.BooleanField(
-        default=False,
-        db_index=True,
-    )
-
-    quantity = models.IntegerField(
-        validators=[MinValueValidator(1)],
-    )
-
-    quantity_fulfilled = models.IntegerField(
-        validators=[MinValueValidator(0)],
-        default=0,
-    )
+    # ------------------------------------------------------------------
+    # Currency
+    # ------------------------------------------------------------------
 
     currency = models.CharField(
         max_length=settings.DEFAULT_CURRENCY_CODE_LENGTH,
@@ -1204,7 +1217,7 @@ class OrderLine(ModelWithMetadata):
     unit_discount_amount = models.DecimalField(
         max_digits=settings.DEFAULT_MAX_DIGITS,
         decimal_places=settings.DEFAULT_DECIMAL_PLACES,
-        default=Decimal("0.0"),
+        default=Decimal("0"),
     )
 
     unit_discount = MoneyField(
@@ -1227,15 +1240,11 @@ class OrderLine(ModelWithMetadata):
     unit_discount_value = models.DecimalField(
         max_digits=settings.DEFAULT_MAX_DIGITS,
         decimal_places=settings.DEFAULT_DECIMAL_PLACES,
-        default=Decimal("0.0"),
+        default=Decimal("0"),
     )
 
     # ------------------------------------------------------------------
     # Unit price
-    #
-    # IMPORTANT:
-    # TaxedMoneyField receives the amount field names and the actual
-    # currency field separately.
     # ------------------------------------------------------------------
 
     unit_price_net_amount = models.DecimalField(
@@ -1301,13 +1310,13 @@ class OrderLine(ModelWithMetadata):
     undiscounted_unit_price_gross_amount = models.DecimalField(
         max_digits=settings.DEFAULT_MAX_DIGITS,
         decimal_places=settings.DEFAULT_DECIMAL_PLACES,
-        default=Decimal("0.0"),
+        default=Decimal("0"),
     )
 
     undiscounted_unit_price_net_amount = models.DecimalField(
         max_digits=settings.DEFAULT_MAX_DIGITS,
         decimal_places=settings.DEFAULT_DECIMAL_PLACES,
-        default=Decimal("0.0"),
+        default=Decimal("0"),
     )
 
     undiscounted_unit_price = TaxedMoneyField(
@@ -1323,13 +1332,13 @@ class OrderLine(ModelWithMetadata):
     undiscounted_total_price_gross_amount = models.DecimalField(
         max_digits=settings.DEFAULT_MAX_DIGITS,
         decimal_places=settings.DEFAULT_DECIMAL_PLACES,
-        default=Decimal("0.0"),
+        default=Decimal("0"),
     )
 
     undiscounted_total_price_net_amount = models.DecimalField(
         max_digits=settings.DEFAULT_MAX_DIGITS,
         decimal_places=settings.DEFAULT_DECIMAL_PLACES,
-        default=Decimal("0.0"),
+        default=Decimal("0"),
     )
 
     undiscounted_total_price = TaxedMoneyField(
@@ -1345,7 +1354,7 @@ class OrderLine(ModelWithMetadata):
     base_unit_price_amount = models.DecimalField(
         max_digits=settings.DEFAULT_MAX_DIGITS,
         decimal_places=settings.DEFAULT_DECIMAL_PLACES,
-        default=Decimal("0.0"),
+        default=Decimal("0"),
     )
 
     base_unit_price = MoneyField(
@@ -1356,7 +1365,7 @@ class OrderLine(ModelWithMetadata):
     undiscounted_base_unit_price_amount = models.DecimalField(
         max_digits=settings.DEFAULT_MAX_DIGITS,
         decimal_places=settings.DEFAULT_DECIMAL_PLACES,
-        default=Decimal("0.0"),
+        default=Decimal("0"),
     )
 
     undiscounted_base_unit_price = MoneyField(
@@ -1451,50 +1460,25 @@ class OrderLine(ModelWithMetadata):
         related_name="allocated_lines",
     )
 
-    bin_location = models.CharField(
-        max_length=100,
-        blank=True,
-    )
+    bin_location = models.CharField(max_length=100, blank=True)
 
-    pick_path_sequence = models.IntegerField(
-        null=True,
-    )
+    pick_path_sequence = models.IntegerField(null=True, blank=True)
 
     # ------------------------------------------------------------------
     # Quality / returns
     # ------------------------------------------------------------------
 
-    return_reason = models.CharField(
-        max_length=100,
-        blank=True,
-    )
-
-    return_condition = models.CharField(
-        max_length=50,
-        blank=True,
-    )
-
-    is_defective = models.BooleanField(
-        default=False,
-    )
-
-    defect_type = models.CharField(
-        max_length=100,
-        blank=True,
-    )
+    return_reason = models.CharField(max_length=100, blank=True)
+    return_condition = models.CharField(max_length=50, blank=True)
+    is_defective = models.BooleanField(default=False)
+    defect_type = models.CharField(max_length=100, blank=True)
 
     # ------------------------------------------------------------------
     # Customer experience
     # ------------------------------------------------------------------
 
-    line_rating = models.IntegerField(
-        null=True,
-        blank=True,
-    )
-
-    line_review = models.TextField(
-        blank=True,
-    )
+    line_rating = models.IntegerField(null=True, blank=True)
+    line_review = models.TextField(blank=True)
 
     # ------------------------------------------------------------------
     # Promotions / attribution
@@ -1506,25 +1490,15 @@ class OrderLine(ModelWithMetadata):
         default=list,
     )
 
-    attribution_tags = JSONField(
-        default=dict,
-        blank=True,
-    )
+    attribution_tags = JSONField(default=dict, blank=True)
 
     objects = OrderLineManager()
 
     class Meta(ModelWithMetadata.Meta):
         ordering = ("created_at", "id")
-
         indexes = [
-            BTreeIndex(
-                fields=["order"],
-                name="orderline_order_idx",
-            ),
-            BTreeIndex(
-                fields=["product_sku"],
-                name="orderline_sku_idx",
-            ),
+            BTreeIndex(fields=["order"], name="orderline_order_idx"),
+            BTreeIndex(fields=["product_sku"], name="orderline_sku_idx"),
             BTreeIndex(
                 fields=["is_shipping_required"],
                 name="orderline_shipping_idx",
@@ -1537,14 +1511,22 @@ class OrderLine(ModelWithMetadata):
                 fields=["created_at"],
                 name="orderline_created_idx",
             ),
-            BTreeIndex(
-                fields=["allocated_warehouse", "order"],
+            BTreeIndex(fields=["allocated_warehouse", "order"]),
+            BTreeIndex(fields=["unit_cost"]),
+            BTreeIndex(fields=["return_reason", "created_at"]),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(quantity__gt=0),
+                name="orderline_quantity_positive",
             ),
-            BTreeIndex(
-                fields=["unit_cost"],
+            models.CheckConstraint(
+                condition=Q(quantity_fulfilled__gte=0),
+                name="orderline_quantity_fulfilled_non_negative",
             ),
-            BTreeIndex(
-                fields=["return_reason", "created_at"],
+            models.CheckConstraint(
+                condition=Q(quantity_fulfilled__lte=F("quantity")),
+                name="orderline_quantity_fulfilled_lte_ordered",
             ),
         ]
 
@@ -1560,7 +1542,6 @@ class OrderLine(ModelWithMetadata):
     def __eq__(self, other):
         if not isinstance(other, OrderLine):
             return NotImplemented
-
         return (
             self.variant == other.variant
             and self.quantity == other.quantity
@@ -1576,15 +1557,13 @@ class OrderLine(ModelWithMetadata):
         self.variant, self.quantity = data
 
     @property
-    def quantity_unfulfilled(self):
+    def quantity_unfulfilled(self) -> Decimal:
         return self.quantity - self.quantity_fulfilled
 
     @property
     def is_digital(self) -> bool:
-        """Return whether the related product variant is digital."""
         if not hasattr(self, "_variant"):
             self._variant = self.variant
-
         return bool(
             self._variant
             and self._variant.is_digital()
@@ -1592,9 +1571,13 @@ class OrderLine(ModelWithMetadata):
         )
 
 
+# =====================================================================
+# FULFILLMENT
+# =====================================================================
+
+
 class FulfillmentQueryset(models.QuerySet["Fulfillment"]):
     def with_related_data(self):
-        """Return fulfillments with related order and lines."""
         return (
             self.select_related("order")
             .prefetch_related(
@@ -1604,15 +1587,11 @@ class FulfillmentQueryset(models.QuerySet["Fulfillment"]):
         )
 
 
-FulfillmentManager = models.Manager.from_queryset(
-    FulfillmentQueryset
-)
+FulfillmentManager = models.Manager.from_queryset(FulfillmentQueryset)
 
 
 class Fulfillment(ModelWithMetadata):
-    fulfillment_order = models.PositiveIntegerField(
-        editable=False,
-    )
+    fulfillment_order = models.PositiveIntegerField(editable=False)
 
     order = models.ForeignKey(
         Order,
@@ -1659,16 +1638,9 @@ class Fulfillment(ModelWithMetadata):
 
     class Meta(ModelWithMetadata.Meta):
         ordering = ("pk",)
-
         indexes = [
-            BTreeIndex(
-                fields=["order"],
-                name="fulfillment_order_idx",
-            ),
-            BTreeIndex(
-                fields=["status"],
-                name="fulfillment_status_idx",
-            ),
+            BTreeIndex(fields=["order"], name="fulfillment_order_idx"),
+            BTreeIndex(fields=["status"], name="fulfillment_status_idx"),
             BTreeIndex(
                 fields=["tracking_number"],
                 name="fulfillment_tracking_idx",
@@ -1683,43 +1655,34 @@ class Fulfillment(ModelWithMetadata):
         return f"Fulfillment #{self.composed_id}"
 
     def save(self, *args, **kwargs):
-        """Assign the fulfillment sequence number when creating."""
         if not self.pk:
             max_order = self.order.fulfillments.aggregate(
                 Max("fulfillment_order")
             )
-
             self.fulfillment_order = (
                 max_order.get("fulfillment_order__max") or 0
             ) + 1
-
         super().save(*args, **kwargs)
 
     @property
-    def composed_id(self):
+    def composed_id(self) -> str:
         return f"{self.order.number}-{self.fulfillment_order}"
 
-    def can_edit(self):
+    def can_edit(self) -> bool:
         return self.status != FulfillmentStatus.CANCELED
 
-    def get_total_quantity(self):
-        """Return total quantity across fulfillment lines."""
+    def get_total_quantity(self) -> Decimal:
         if not hasattr(self, "_lines"):
             self._lines = list(self.lines.all())
-
         return sum(
-            line.quantity
-            for line in self._lines
+            (line.quantity for line in self._lines),
+            start=Decimal("0"),
         )
 
     @property
-    def is_tracking_number_url(self):
-        """Return whether the tracking number is a URL."""
-        return bool(
-            self.tracking_number
-        ) and match(
-            r"^[-\w]+://",
-            self.tracking_number,
+    def is_tracking_number_url(self) -> bool:
+        return bool(self.tracking_number) and bool(
+            match(r"^[-\w]+://", self.tracking_number)
         )
 
 
@@ -1738,7 +1701,11 @@ class FulfillmentLine(models.Model):
         db_index=True,
     )
 
-    quantity = models.PositiveIntegerField()
+    quantity = models.DecimalField(
+        max_digits=12,
+        decimal_places=3,
+        validators=[MinValueValidator(Decimal("0.001"))],
+    )
 
     stock = models.ForeignKey(
         "ecommerce.Stock",
@@ -1750,7 +1717,6 @@ class FulfillmentLine(models.Model):
 
     class Meta:
         ordering = ["-id"]
-
         indexes = [
             BTreeIndex(
                 fields=["order_line"],
@@ -1763,23 +1729,20 @@ class FulfillmentLine(models.Model):
         ]
 
     def __str__(self):
-        return (
-            f"{self.order_line.product_name} x {self.quantity}"
-        )
+        return f"{self.order_line.product_name} x {self.quantity}"
+
+
+# =====================================================================
+# ORDER EVENT
+# =====================================================================
 
 
 class OrderEventQueryset(models.QuerySet["OrderEvent"]):
     def with_related_data(self):
-        """Return events with related order and user."""
-        return self.select_related(
-            "order",
-            "user",
-        )
+        return self.select_related("order", "user")
 
 
-OrderEventManager = models.Manager.from_queryset(
-    OrderEventQueryset
-)
+OrderEventManager = models.Manager.from_queryset(OrderEventQueryset)
 
 
 class OrderEvent(models.Model):
@@ -1831,28 +1794,12 @@ class OrderEvent(models.Model):
 
     class Meta:
         ordering = ("date",)
-
         indexes = [
-            BTreeIndex(
-                fields=["type"],
-                name="orderevent_type_idx",
-            ),
-            BTreeIndex(
-                fields=["order"],
-                name="orderevent_order_idx",
-            ),
-            BTreeIndex(
-                fields=["date"],
-                name="orderevent_date_idx",
-            ),
-            BTreeIndex(
-                fields=["user"],
-                name="orderevent_user_idx",
-            ),
-            BTreeIndex(
-                fields=["related"],
-                name="orderevent_related_idx",
-            ),
+            BTreeIndex(fields=["type"], name="orderevent_type_idx"),
+            BTreeIndex(fields=["order"], name="orderevent_order_idx"),
+            BTreeIndex(fields=["date"], name="orderevent_date_idx"),
+            BTreeIndex(fields=["user"], name="orderevent_user_idx"),
+            BTreeIndex(fields=["related"], name="orderevent_related_idx"),
         ]
 
     def __repr__(self):
@@ -1862,11 +1809,15 @@ class OrderEvent(models.Model):
         )
 
 
+# =====================================================================
+# ORDER GRANTED REFUND
+# =====================================================================
+
+
 class OrderGrantedRefundQueryset(
     models.QuerySet["OrderGrantedRefund"]
 ):
     def with_related_data(self):
-        """Return refunds with related objects."""
         return (
             self.select_related(
                 "order",
@@ -1930,9 +1881,7 @@ class OrderGrantedRefund(models.Model):
         db_index=True,
     )
 
-    shipping_costs_included = models.BooleanField(
-        default=False,
-    )
+    shipping_costs_included = models.BooleanField(default=False)
 
     transaction_item = models.ForeignKey(
         "payment.TransactionItem",
@@ -1953,16 +1902,9 @@ class OrderGrantedRefund(models.Model):
 
     class Meta:
         ordering = ("created_at", "id")
-
         indexes = [
-            BTreeIndex(
-                fields=["order"],
-                name="orderrefund_order_idx",
-            ),
-            BTreeIndex(
-                fields=["status"],
-                name="orderrefund_status_idx",
-            ),
+            BTreeIndex(fields=["order"], name="orderrefund_order_idx"),
+            BTreeIndex(fields=["status"], name="orderrefund_status_idx"),
             BTreeIndex(
                 fields=["created_at"],
                 name="orderrefund_created_idx",
@@ -1982,7 +1924,11 @@ class OrderGrantedRefundLine(models.Model):
         db_index=True,
     )
 
-    quantity = models.PositiveIntegerField()
+    quantity = models.DecimalField(
+        max_digits=12,
+        decimal_places=3,
+        validators=[MinValueValidator(Decimal("0.001"))],
+    )
 
     reason = models.TextField(
         blank=True,
@@ -2010,237 +1956,9 @@ class OrderGrantedRefundLine(models.Model):
         ]
 
 
-class OrderPerformanceMetrics(models.Model):
-    """Order performance tracking."""
-
-    order = models.ForeignKey(
-        Order,
-        on_delete=models.CASCADE,
-        related_name="metrics",
-    )
-
-    calculated_at = models.DateTimeField(
-        auto_now_add=True,
-    )
-
-    customer_lifetime_value = models.DecimalField(
-        max_digits=12,
-        decimal_places=2,
-    )
-
-    customer_acquisition_cost = models.DecimalField(
-        max_digits=12,
-        decimal_places=2,
-    )
-
-    customer_retention_score = models.DecimalField(
-        max_digits=5,
-        decimal_places=2,
-    )
-
-    days_to_fulfill = models.IntegerField()
-
-    days_to_deliver = models.IntegerField()
-
-    same_day_fulfillment_rate = models.DecimalField(
-        max_digits=5,
-        decimal_places=4,
-    )
-
-    two_day_fulfillment_rate = models.DecimalField(
-        max_digits=5,
-        decimal_places=4,
-    )
-
-    gross_margin = models.DecimalField(
-        max_digits=5,
-        decimal_places=4,
-    )
-
-    contribution_margin = models.DecimalField(
-        max_digits=5,
-        decimal_places=4,
-    )
-
-    fulfillment_cost = models.DecimalField(
-        max_digits=12,
-        decimal_places=2,
-    )
-
-    shipping_cost = models.DecimalField(
-        max_digits=12,
-        decimal_places=2,
-    )
-
-    packaging_cost = models.DecimalField(
-        max_digits=12,
-        decimal_places=2,
-    )
-
-    perfect_order_score = models.IntegerField()
-
-    defect_rate = models.DecimalField(
-        max_digits=5,
-        decimal_places=4,
-    )
-
-    return_rate = models.DecimalField(
-        max_digits=5,
-        decimal_places=4,
-    )
-
-    net_promoter_score = models.IntegerField(
-        null=True,
-    )
-
-    customer_satisfaction_score = models.IntegerField(
-        null=True,
-    )
-
-    review_score = models.DecimalField(
-        max_digits=3,
-        decimal_places=2,
-        null=True,
-    )
-
-    class Meta:
-        indexes = [
-            models.Index(
-                fields=["order", "calculated_at"]
-            ),
-            models.Index(
-                fields=["customer_retention_score"]
-            ),
-            models.Index(
-                fields=["perfect_order_score"]
-            ),
-        ]
-
-        ordering = ["-calculated_at"]
-
-    def __str__(self):
-        return (
-            f"Metrics for Order #{self.order.number} "
-            f"at {self.calculated_at}"
-        )
-
-
-class OrderSplit(models.Model):
-    """Order splitting for multi-fulfillment."""
-
-    parent_order = models.ForeignKey(
-        Order,
-        related_name="child_splits",
-        on_delete=models.CASCADE,
-    )
-
-    child_order = models.ForeignKey(
-        Order,
-        related_name="parent_splits",
-        on_delete=models.CASCADE,
-    )
-
-    split_type = models.CharField(
-        max_length=50,
-        choices=[
-            ("AUTOMATIC", "Automatic Split"),
-            ("MANUAL", "Manual Split"),
-            ("WAREHOUSE", "Warehouse Split"),
-            ("SHIPPING", "Shipping Method Split"),
-        ],
-    )
-
-    reason = models.TextField(
-        blank=True,
-    )
-
-    split_at = models.DateTimeField(
-        auto_now_add=True,
-    )
-
-    split_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        null=True,
-        on_delete=models.SET_NULL,
-    )
-
-    class Meta:
-        constraints = [
-            models.UniqueConstraint(
-                fields=["parent_order", "child_order"],
-                name="unique_order_split",
-            )
-        ]
-
-        indexes = [
-            models.Index(
-                fields=["parent_order", "split_type"]
-            ),
-        ]
-
-        ordering = ["-split_at"]
-
-    def __str__(self):
-        return (
-            f"Split Order #{self.parent_order.number} "
-            f"-> #{self.child_order.number}"
-        )
-
-
-class OrderMerge(models.Model):
-    """Order merging."""
-
-    source_orders = models.ManyToManyField(
-        Order,
-        related_name="merged_from",
-    )
-
-    target_order = models.ForeignKey(
-        Order,
-        related_name="merged_to",
-        on_delete=models.CASCADE,
-    )
-
-    merge_type = models.CharField(
-        max_length=50,
-        choices=[
-            ("CUSTOMER_REQUEST", "Customer Request"),
-            ("AUTOMATIC", "Automatic Merge"),
-            ("OPERATIONS", "Operations Merge"),
-        ],
-    )
-
-    merge_reason = models.TextField()
-
-    merged_at = models.DateTimeField(
-        auto_now_add=True,
-    )
-
-    merged_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        null=True,
-        on_delete=models.SET_NULL,
-    )
-
-    class Meta:
-        indexes = [
-            models.Index(
-                fields=["target_order", "merged_at"]
-            ),
-        ]
-
-        ordering = ["-merged_at"]
-
-    def __str__(self):
-        source_order_numbers = ", ".join(
-            str(order.number)
-            for order in self.source_orders.all()
-        )
-
-        return (
-            f"Merged Orders [{source_order_numbers}] "
-            f"-> #{self.target_order.number}"
-        )
+# =====================================================================
+# ORDER TRACKING EVENT
+# =====================================================================
 
 
 class OrderTrackingEvent(models.Model):
@@ -2280,57 +1998,46 @@ class OrderTrackingEvent(models.Model):
 
     event_timestamp = models.DateTimeField()
 
-    location = models.CharField(
-        max_length=500,
-        blank=True,
-    )
+    location = models.CharField(max_length=500, blank=True)
 
     latitude = models.DecimalField(
         max_digits=9,
         decimal_places=6,
         null=True,
+        blank=True,
     )
 
     longitude = models.DecimalField(
         max_digits=9,
         decimal_places=6,
         null=True,
-    )
-
-    carrier = models.CharField(
-        max_length=100,
         blank=True,
     )
 
-    tracking_number = models.CharField(
-        max_length=100,
-        blank=True,
-    )
+    carrier = models.CharField(max_length=100, blank=True)
 
-    estimated_delivery = models.DateTimeField(
-        null=True,
-    )
+    tracking_number = models.CharField(max_length=100, blank=True)
 
-    actual_delivery = models.DateTimeField(
-        null=True,
-    )
+    estimated_delivery = models.DateTimeField(null=True, blank=True)
 
-    event_data = JSONField(
-        default=dict,
-    )
+    actual_delivery = models.DateTimeField(null=True, blank=True)
+
+    event_data = JSONField(default=dict)
 
     class Meta:
         ordering = ["event_timestamp"]
-
         indexes = [
             models.Index(
-                fields=["order", "event_timestamp"]
+                fields=["order", "event_timestamp"],
+                name="tracking_order_time_idx",
             ),
             models.Index(
-                fields=["event_type", "event_timestamp"]
+                fields=["event_type", "event_timestamp"],
+                name="tracking_type_time_idx",
             ),
             models.Index(
-                fields=["tracking_number"]
+                fields=["tracking_number"],
+                name="tracking_number_idx",
             ),
         ]
 
@@ -2339,221 +2046,4 @@ class OrderTrackingEvent(models.Model):
             f"Tracking Event {self.event_type} "
             f"for Order #{self.order.number} "
             f"at {self.event_timestamp}"
-        )
-
-
-class OrderFraudAssessment(models.Model):
-    """Order fraud detection assessment."""
-
-    RISK_LEVELS = [
-        ("LOW", "Low Risk"),
-        ("MEDIUM", "Medium Risk"),
-        ("HIGH", "High Risk"),
-        ("VERY_HIGH", "Very High Risk"),
-        ("BLOCKED", "Blocked"),
-    ]
-
-    order = models.OneToOneField(
-        Order,
-        on_delete=models.CASCADE,
-        related_name="fraud_assessment",
-    )
-
-    risk_score = models.DecimalField(
-        max_digits=5,
-        decimal_places=2,
-    )
-
-    risk_level = models.CharField(
-        max_length=20,
-        choices=RISK_LEVELS,
-    )
-
-    assessment_reason = models.TextField()
-
-    velocity_score = models.DecimalField(
-        max_digits=5,
-        decimal_places=2,
-    )
-
-    geo_risk_score = models.DecimalField(
-        max_digits=5,
-        decimal_places=2,
-    )
-
-    ip_risk_score = models.DecimalField(
-        max_digits=5,
-        decimal_places=2,
-    )
-
-    device_risk_score = models.DecimalField(
-        max_digits=5,
-        decimal_places=2,
-    )
-
-    behavioral_risk_score = models.DecimalField(
-        max_digits=5,
-        decimal_places=2,
-    )
-
-    is_email_verified = models.BooleanField(
-        default=False,
-    )
-
-    is_phone_verified = models.BooleanField(
-        default=False,
-    )
-
-    is_address_verified = models.BooleanField(
-        default=False,
-    )
-
-    is_payment_verified = models.BooleanField(
-        default=False,
-    )
-
-    model_version = models.CharField(
-        max_length=50,
-    )
-
-    model_confidence = models.DecimalField(
-        max_digits=5,
-        decimal_places=4,
-    )
-
-    feature_vector = JSONField(
-        default=dict,
-    )
-
-    assessed_at = models.DateTimeField(
-        auto_now_add=True,
-    )
-
-    assessed_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        null=True,
-        on_delete=models.SET_NULL,
-    )
-
-    review_required = models.BooleanField(
-        default=False,
-    )
-
-    reviewed_at = models.DateTimeField(
-        null=True,
-    )
-
-    reviewed_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        null=True,
-        on_delete=models.SET_NULL,
-        related_name="fraud_reviews",
-    )
-
-    class Meta:
-        indexes = [
-            models.Index(
-                fields=["risk_level", "assessed_at"]
-            ),
-            models.Index(
-                fields=["risk_score"]
-            ),
-            models.Index(
-                fields=["review_required", "assessed_at"]
-            ),
-        ]
-
-        ordering = ["-assessed_at"]
-
-    def __str__(self):
-        return (
-            f"Fraud Assessment for Order #{self.order.number} "
-            f"- Risk: {self.risk_level}"
-        )
-
-
-class OrderPromise(models.Model):
-    """Order delivery and service promises."""
-
-    PROMISE_TYPES = [
-        ("DELIVERY", "Delivery Promise"),
-        ("SHIPPING", "Shipping Promise"),
-        ("AVAILABILITY", "Availability Promise"),
-        ("PRICE", "Price Promise"),
-    ]
-
-    order = models.ForeignKey(
-        Order,
-        on_delete=models.CASCADE,
-        related_name="promises",
-    )
-
-    promise_type = models.CharField(
-        max_length=20,
-        choices=PROMISE_TYPES,
-    )
-
-    promised_by = models.DateTimeField()
-
-    promised_value = models.CharField(
-        max_length=500,
-    )
-
-    actual_value = models.CharField(
-        max_length=500,
-        null=True,
-        blank=True,
-    )
-
-    fulfilled_at = models.DateTimeField(
-        null=True,
-        blank=True,
-    )
-
-    is_met = models.BooleanField(
-        null=True,
-    )
-
-    broken_reason = models.TextField(
-        blank=True,
-    )
-
-    compensation_applied = models.BooleanField(
-        default=False,
-    )
-
-    compensation_amount = models.DecimalField(
-        max_digits=12,
-        decimal_places=2,
-        null=True,
-    )
-
-    compensation_type = models.CharField(
-        max_length=50,
-        blank=True,
-    )
-
-    class Meta:
-        indexes = [
-            models.Index(
-                fields=["order", "promise_type"]
-            ),
-            models.Index(
-                fields=["is_met", "promised_by"]
-            ),
-        ]
-
-        ordering = ["-promised_by"]
-
-    def __str__(self):
-        if self.is_met:
-            status = "Met"
-        elif self.is_met is False:
-            status = "Broken"
-        else:
-            status = "Pending"
-
-        return (
-            f"{self.promise_type} Promise "
-            f"for Order #{self.order.number} - {status}"
         )

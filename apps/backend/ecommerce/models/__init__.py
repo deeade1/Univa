@@ -1,247 +1,262 @@
 ﻿# apps/backend/ecommerce/models/__init__.py
+
+# ---------------------------------------------------------------------
+# Attribute
+# ---------------------------------------------------------------------
 from .attribute import (
+    AssignedAttribute,
     Attribute,
+    AttributeScopeLink,
+    AttributeTranslation,
     AttributeValue,
-    AttributeProduct,
-    AttributeVariant,
-    AssignedProductAttributeValue,
-    AssignedVariantAttribute,
-    AssignedVariantAttributeValue,
+    AttributeValueTranslation,
 )
+
+# ---------------------------------------------------------------------
+# Channel
+# ---------------------------------------------------------------------
 from .channel import Channel
+
+# ---------------------------------------------------------------------
+# Checkout
+# ---------------------------------------------------------------------
 from .checkout import (
     Checkout,
     CheckoutLine,
     CheckoutMetadata,
 )
+
+# ---------------------------------------------------------------------
+# Discount
+# ---------------------------------------------------------------------
 from .discount import (
-    Promotion,
-    PromotionRule,
-    Voucher,
-    VoucherTranslation,
-    PromotionEvent,
-    CheckoutLineDiscount,
     CheckoutDiscount,
-    OrderLineDiscount,
+    CheckoutLineDiscount,
     OrderDiscount,
+    OrderLineDiscount,
+    Promotion,
+    PromotionEvent,
+    PromotionRule,
     PromotionRuleTranslation,
     PromotionRule_Variants,
     PromotionTranslation,
-    VoucherCustomer,
+    Voucher,
     VoucherChannelListing,
     VoucherCode,
-    
+    VoucherCustomer,
+    VoucherTranslation,
 )
-# Import constants for convenience
+
+# Constants — re-exported for convenience
 from .constants import (
+    AllocationStrategy,
     DiscountType,
     DiscountValueType,
+    MarkAsPaidStrategy,
     PromotionEvents,
     PromotionType,
     RewardType,
     RewardValueType,
-    VoucherType,
-    AllocationStrategy,
-    MarkAsPaidStrategy,
     TransactionFlowStrategy,
+    VoucherType,
 )
+
+# ---------------------------------------------------------------------
+# Gift card
+# ---------------------------------------------------------------------
 from .giftcard import (
     GiftCard,
     GiftCardEvent,
     GiftCardTag,
 )
-    
+
+# ---------------------------------------------------------------------
+# Gotomarket
+# ---------------------------------------------------------------------
 from .gotomarket import (
-    MarketItem,
-    Purchase,
-    PurchaseItem,
-    PurchaseCounter
+    Freshness,
+    MarketItemMetadata,
+    SourcingType,
 )
+
+# ---------------------------------------------------------------------
+# Order
+# ---------------------------------------------------------------------
 from .order import (
-    Order,
-    OrderLine,
     Fulfillment,
     FulfillmentLine,
+    Order,
     OrderEvent,
     OrderGrantedRefund,
     OrderGrantedRefundLine,
-    OrderPerformanceMetrics,
-    OrderSplit,
-    OrderMerge,
+    OrderLine,
     OrderTrackingEvent,
-    OrderFraudAssessment,
-    OrderPromise,
-    
 )
+
+# ---------------------------------------------------------------------
 # Category
+# ---------------------------------------------------------------------
 from .category import (
     Category,
     CategoryTranslation,
 )
 
+# ---------------------------------------------------------------------
+# Product
+# ---------------------------------------------------------------------
 from .product import (
-    Product,
-    ProductVariant,
-    ProductType,
-    ProductTranslation,
-    ProductVariantTranslation,
-    ProductReview,
-    
-    ProductMedia,
-    ProductChannelListing,
-    ProductVariantChannelListing,
-    VariantChannelListingPromotionRule,
     DigitalContent,
     DigitalContentUrl,
+    Product,
+    ProductChannelListing,
+    ProductMedia,
+    ProductReview,
+    ProductTranslation,
+    ProductType,
+    ProductVariant,
+    ProductVariantChannelListing,
+    ProductVariantTranslation,
+    VariantChannelListingPromotionRule,
     VariantMedia,
-    
-)
-from .collection import (
-    CollectionProduct, 
-    Collection,
-    CollectionTranslation,
-    CollectionChannelListing,
-)   
-from .shipping import (
-    ShippingZone,
-    ShippingMethod,
-    ShippingMethodTranslation,
-    ShippingMethodChannelListing,
-    
-)
-from .inventory import (
-    Stock,
-    Allocation,
-    Reservation,
-    PreorderAllocation,
-    PreorderReservation,
-    ReturnsManagement,
-    InventoryPrediction,
-    InventoryHealthMetrics,
-    InterWarehouseTransfer,
-    WarehousePerformance,
-    WarehouseTask,
-    
 )
 
+# ---------------------------------------------------------------------
+# Collection
+# ---------------------------------------------------------------------
+from .collection import (
+    Collection,
+    CollectionChannelListing,
+    CollectionProduct,
+    CollectionTranslation,
+)
+
+# ---------------------------------------------------------------------
+# Shipping
+# ---------------------------------------------------------------------
+from .shipping import (
+    ShippingMethod,
+    ShippingMethodChannelListing,
+    ShippingMethodTranslation,
+    ShippingZone,
+)
+
+# ---------------------------------------------------------------------
+# Inventory
+# ---------------------------------------------------------------------
+# ---------------------------------------------------------------------
+# Inventory
+# ---------------------------------------------------------------------
+from .inventory import (
+    Allocation,
+    PreorderAllocation,
+    PreorderReservation,
+    Reservation,
+    Stock,
+    StockHistory,
+)
+# ---------------------------------------------------------------------
+# Warehouse
+# ---------------------------------------------------------------------
 from .warehouse import (
-    Warehouse,
     ChannelWarehouse,
-    
+    Warehouse,
 )
 
 __all__ = [
     # Attribute
-    'Attribute',
-    'AttributeValue',
-    'AttributeProduct',
-    'AttributeVariant',
-    'AssignedProductAttributeValue',
-    'AssignedVariantAttribute',
-    'AssignedVariantAttributeValue',
-    
+    "AssignedAttribute",
+    "Attribute",
+    "AttributeScopeLink",
+    "AttributeTranslation",
+    "AttributeValue",
+    "AttributeValueTranslation",
     # Channel
-    'Channel',
-    
+    "Channel",
     # Checkout
-    'Checkout',
-    'CheckoutLine',
-    'CheckoutMetadata',
-    
-    
+    "Checkout",
+    "CheckoutLine",
+    "CheckoutMetadata",
     # Discount
-    'Discount',
-    'DiscountRule',
-    'DiscountTranslation',
-    'Promotion',
-    'PromotionRule',
-    'Voucher',
-    'VoucherTranslation',
-    'Sale',
-    'SaleTranslation',
-    
-    # Discount Constants
-    'DiscountType',
-    'DiscountValueType',
-    'PromotionEvents',
-    'PromotionType',
-    'RewardType',
-    'RewardValueType',
-    'VoucherType',
-    'AllocationStrategy',
-    'MarkAsPaidStrategy',
-    'TransactionFlowStrategy',
-    
-    # GiftCard
-    'GiftCard',
-    'GiftCardEvent',
-    'GiftCardTag',
-    
-    # GoToMarket
-    'MarketItem',
-    'Purchase',
-    'PurchaseCounter',
-    'PurchaseItem',
-    
-    
-    
+    "CheckoutDiscount",
+    "CheckoutLineDiscount",
+    "OrderDiscount",
+    "OrderLineDiscount",
+    "Promotion",
+    "PromotionEvent",
+    "PromotionRule",
+    "PromotionRuleTranslation",
+    "PromotionRule_Variants",
+    "PromotionTranslation",
+    "Voucher",
+    "VoucherChannelListing",
+    "VoucherCode",
+    "VoucherCustomer",
+    "VoucherTranslation",
+    # Discount constants
+    "AllocationStrategy",
+    "DiscountType",
+    "DiscountValueType",
+    "MarkAsPaidStrategy",
+    "PromotionEvents",
+    "PromotionType",
+    "RewardType",
+    "RewardValueType",
+    "TransactionFlowStrategy",
+    "VoucherType",
+    # Gift card
+    "GiftCard",
+    "GiftCardEvent",
+    "GiftCardTag",
+    # Gotomarket
+    "Freshness",
+    "MarketItemMetadata",
+    "SourcingType",
     # Order
-    'Order',
-    'OrderLine',
-    'OrderDiscount',
-    'OrderGiftCard',
-    'OrderEvent',
-    'OrderNote',
-    'OrderMetadata',
-    
+    "Fulfillment",
+    "FulfillmentLine",
+    "Order",
+    "OrderEvent",
+    "OrderGrantedRefund",
+    "OrderGrantedRefundLine",
+    "OrderLine",
+    "OrderTrackingEvent",
     # Category
-    'Category',
-    'CategoryTranslation',
-    
+    "Category",
+    "CategoryTranslation",
     # Product
-    'Product',
-    'ProductVariant',
-    'ProductType',
-    'ProductTranslation',
-    'ProductVariantTranslation',
-    'ProductMedia',
-    'ProductReview',
-    'ProductChannelListing',
-    'ProductVariantChannelListing',
-    'VariantChannelListingPromotionRule',
-    'DigitalContent',
-    'DigitalContentUrl',
-    'VariantMedia',
-    
-    
-    #Collection
-    'CollectionProduct',
-    'Collection',
-    'CollectionTranslation',
-    'CollectionChannelListing',
-    
+    "DigitalContent",
+    "DigitalContentUrl",
+    "Product",
+    "ProductChannelListing",
+    "ProductMedia",
+    "ProductReview",
+    "ProductTranslation",
+    "ProductType",
+    "ProductVariant",
+    "ProductVariantChannelListing",
+    "ProductVariantTranslation",
+    "VariantChannelListingPromotionRule",
+    "VariantMedia",
+    # Collection
+    "Collection",
+    "CollectionChannelListing",
+    "CollectionProduct",
+    "CollectionTranslation",
     # Shipping
-    'ShippingZone',
-    'ShippingMethod',
-    'ShippingMethodTranslation',
-    'ShippingMethodChannelListing',
+    "ShippingMethod",
+    "ShippingMethodChannelListing",
+    "ShippingMethodTranslation",
+    "ShippingZone",
     
+    # Inventory
+    "Allocation",
+    "PreorderAllocation",
+    "PreorderReservation",
+    "Reservation",
+    "Stock",
+    "StockHistory",
     
     # Warehouse
-    'Warehouse',
-    'ChannelWarehouse',
-    
-    # inventory
-    'Stock',
-    'Allocation',
-    'Reservation',
-    'PreorderAllocation',
-    'PreorderReservation',
-    'ReturnsManagement',
-    'InventoryPrediction',
-    'InventoryHealthMetrics',
-    'InterWarehouseTransfer',
-    'WarehousePerformance',
-    'WarehouseTask',
+    "ChannelWarehouse",
+    "Warehouse",
 ]
-

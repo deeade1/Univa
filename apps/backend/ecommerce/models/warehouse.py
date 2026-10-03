@@ -10,7 +10,7 @@ This module owns warehouse, channel warehouse association, and basic warehouse o
 
 import uuid
 import itertools
-
+from decimal import Decimal
 from django.conf import settings
 from django.contrib.postgres.indexes import BTreeIndex
 from django.db import models
@@ -268,14 +268,15 @@ class Warehouse(
         )
 
     @property
-    def capacity_utilization(self) -> float:
+    def capacity_utilization(self) -> Decimal:
         if self.capacity_total == 0:
-            return 0.0
+            return Decimal("0")
 
-        return round(
-            (self.capacity_used / self.capacity_total) * 100,
-            2,
-        )
+        return (
+            Decimal(self.capacity_used)
+            / Decimal(self.capacity_total)
+            * Decimal("100")
+        ).quantize(Decimal("0.01"))
 
     def delete(self, *args, **kwargs) -> None:
         address = self.address

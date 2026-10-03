@@ -43,6 +43,8 @@ from django.contrib.auth import get_user_model
 from ecommerce.models.channel import Channel
 
 User = get_user_model()
+
+
 # ============================================================================
 # PRODUCT
 # ============================================================================
@@ -295,16 +297,23 @@ class ProductQuerySet(models.QuerySet):
         descending: bool = False,
     ):
         """
-        Sort products by a product attribute.
+        Sort products by an attribute.
 
-        This is intentionally implemented at queryset level so sorting
-        remains database-driven and works correctly with pagination.
+        Ordering rules:
+            1. Products missing the attribute come last.
+            2. Products with the attribute but no values come next.
+            3. Products with values come first, concatenated in
+               attribute-value sort order.
+
+        Uses the new AssignedAttribute model, which stores both
+        preset values (attribute_value) and raw values (raw_value).
+        Sorting operates on `attribute_value__name` and falls back
+        to `raw_value` when no preset is set.
         """
 
         from ecommerce.models.attribute import (
-            AssignedProductAttributeValue,
-            AttributeProduct,
-            AttributeValue,
+            AssignedAttribute,
+            AttributeScopeLink,
         )
 
         try:
@@ -321,40 +330,43 @@ class ProductQuerySet(models.QuerySet):
                 ),
             )
 
+        # Attribute is linked to this product's type via a scope link.
+        attribute_applies = AttributeScopeLink.objects.using(self.db).filter(
+            product_type_id=OuterRef("product_type_id"),
+            attribute_id=attribute_pk,
+        )
+
+        # This product has at least one assignment of the attribute.
+        has_assignment = AssignedAttribute.objects.using(self.db).filter(
+            product_id=OuterRef("pk"),
+            attribute_id=attribute_pk,
+        )
+
         return (
             self.annotate(
                 grouped_ids=Count("id"),
                 concatenated_values=Case(
+                    # Attribute doesn't apply to this product type → ""
                     When(
-                        Exists(
-                            AttributeProduct.objects.using(self.db).filter(
-                                product_type_id=OuterRef(
-                                    "product_type_id"
-                                ),
-                                attribute_id=attribute_pk,
-                            )
-                        )
-                        & ~Exists(
-                            AssignedProductAttributeValue.objects.using(
-                                self.db
-                            ).filter(
-                                product_id=OuterRef("pk"),
-                                value__attribute_id=attribute_pk,
-                            )
-                        ),
+                        ~Exists(attribute_applies),
                         then=Value(""),
                     ),
+                    # Attribute applies but no values assigned → ""
+                    When(
+                        ~Exists(has_assignment),
+                        then=Value(""),
+                    ),
+                    # Attribute applies and has values → concatenate
                     default=StringAgg(
-                        F("attributevalues__value__name"),
+                        F("assigned_attributes__attribute_value__name"),
                         filter=Q(
-                            attributevalues__value__attribute_id=attribute_pk
+                            assigned_attributes__attribute_id=attribute_pk,
+                            assigned_attributes__attribute_value__isnull=False,
                         ),
                         delimiter=",",
                         ordering=[
-                            f"attributevalues__value__{field_name}"
-                            for field_name in (
-                                AttributeValue._meta.ordering or []
-                            )
+                            "assigned_attributes__attribute_value__sort_order",
+                            "assigned_attributes__attribute_value__name",
                         ],
                     ),
                     output_field=models.CharField(),
@@ -375,12 +387,9 @@ class ProductQuerySet(models.QuerySet):
                 )
             )
             .order_by(
-                f"{'-' if descending else ''}"
-                "concatenated_values_order",
-                f"{'-' if descending else ''}"
-                "concatenated_values",
-                f"{'-' if descending else ''}"
-                "name",
+                f"{'-' if descending else ''}concatenated_values_order",
+                f"{'-' if descending else ''}concatenated_values",
+                f"{'-' if descending else ''}name",
             )
         )
 
@@ -394,13 +403,13 @@ class ProductQuerySet(models.QuerySet):
 
         common_fields = (
             "media",
-            "variants__attributes__values",
-            "variants__attributes__assignment__attribute",
+            "variants__assigned_attributes__attribute",
+            "variants__assigned_attributes__attribute_value",
             "variants__variant_media__media",
             "variants__stocks__allocations",
             "variants__channel_listings__channel",
             "channel_listings__channel",
-            "product_type__attributeproduct",
+            "product_type__attribute_scope_links__attribute",
         )
 
         if single_object:
@@ -521,8 +530,8 @@ class ProductVariantQuerySet(models.QuerySet):
         """
 
         return self.prefetch_related(
-            "attributes__values",
-            "attributes__assignment__attribute",
+            "assigned_attributes__attribute",
+            "assigned_attributes__attribute_value",
             "variant_media__media",
         )
 

@@ -310,9 +310,7 @@ class ShippingZone(ModelWithMetadata):
                     "default": "Only one default shipping zone can exist."
                 })
 
-    def save(self, *args, **kwargs):
-        self.full_clean()
-        super().save(*args, **kwargs)
+    
 
     def get_shipping_methods_for_channel(self, channel_slug: str):
         """Get shipping methods for a specific channel."""
@@ -466,9 +464,7 @@ class ShippingMethod(ModelWithMetadata):
                     "delivery_time_min": "Minimum delivery time cannot be greater than maximum."
                 })
 
-    def save(self, *args, **kwargs):
-        self.full_clean()
-        super().save(*args, **kwargs)
+    
 
     def get_price(self, channel_id: int) -> Optional[Money]:
         """Get price for a specific channel."""
@@ -506,7 +502,7 @@ class ShippingMethod(ModelWithMetadata):
                 (not self.minimum_order_weight or self.minimum_order_weight <= weight)
                 and (not self.maximum_order_weight or self.maximum_order_weight >= weight)
             )
-            country_valid = self.shipping_zone.countries.filter(code=country_code).exists()
+            country_valid = country_code in self.shipping_zone.countries
             product_valid = not (product_ids and self.excluded_products.filter(id__in=product_ids).exists())
             return weight_valid and country_valid and product_valid
         
@@ -584,9 +580,7 @@ class ShippingMethodPostalCodeRule(models.Model):
                 "end": "End postal code cannot be before start postal code."
             })
 
-    def save(self, *args, **kwargs):
-        self.full_clean()
-        super().save(*args, **kwargs)
+    
 
     def matches(self, postal_code: str) -> bool:
         """Check if a postal code matches this rule."""
@@ -714,9 +708,7 @@ class ShippingMethodChannelListing(models.Model):
                 "minimum_order_price_amount": "Minimum order price cannot be greater than maximum order price."
             })
 
-    def save(self, *args, **kwargs):
-        self.full_clean()
-        super().save(*args, **kwargs)
+    
 
     def get_price(self) -> Money:
         """Get the price as a Money object."""
@@ -801,9 +793,7 @@ class ShippingMethodTranslation(models.Model):
             self.description = clean_editor_js(self.description, to_string=False)
         super().clean()
 
-    def save(self, *args, **kwargs):
-        self.full_clean()
-        super().save(*args, **kwargs)
+    
 
     def get_translated_object_id(self):
         return "ShippingMethod", self.shipping_method_id

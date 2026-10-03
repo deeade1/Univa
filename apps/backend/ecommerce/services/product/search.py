@@ -1,210 +1,221 @@
-from collections import defaultdict
+# ecommerce/services/product/search.py
+
+"""
+Product full-text search indexing.
+
+Uses Django's built-in SearchVector primitives. The previous
+implementation depended on custom FlatConcatSearchVector /
+NoValidationSearchVector classes that no longer exist.
+
+Rebuilt on the unified AssignedAttribute model.
+"""
+
+from __future__ import annotations
+
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Union
 
 from django.conf import settings
-from django.contrib.postgres.search import SearchQuery, SearchRank
+from django.contrib.postgres.search import SearchQuery, SearchRank, SearchVector
 from django.db.models import F, Q, Value, prefetch_related_objects
 
-from attribute import AttributeInputType
-from attribute.models import Attribute
-from core.postgres import FlatConcatSearchVector, NoValidationSearchVector
 from core.utils.editorjs import clean_editor_js
-from product.models import Product
+from ecommerce.models.attribute import AssignedAttribute, Attribute
+from ecommerce.models.product import Product
 
 if TYPE_CHECKING:
     from django.db.models import QuerySet
 
+
+# ---------------------------------------------------------------------------
 # Constants
+# ---------------------------------------------------------------------------
+
 PRODUCT_SEARCH_FIELDS = ["name", "description_plaintext"]
+
 PRODUCT_FIELDS_TO_PREFETCH = [
-    "variants__attributes__values",
-    "variants__attributes__assignment__attribute",
-    "attributevalues__value",
-    "product_type__attributeproduct__attribute",
+    "variants__assigned_attributes__attribute",
+    "variants__assigned_attributes__attribute_value",
+    "assigned_attributes__attribute",
+    "assigned_attributes__attribute_value",
+    "product_type__attribute_scope_links__attribute",
 ]
+
 PRODUCTS_BATCH_SIZE = 100
 
 
-def _prep_product_search_vector_index(products):
-    """Prepare and update the search vector for a batch of products."""
-    prefetch_related_objects(products, *PRODUCT_FIELDS_TO_PREFETCH)
-
-    for product in products:
-        product.search_vector = FlatConcatSearchVector(
-            *prepare_product_search_vector_value(product, already_prefetched=True)
-        )
-        product.search_index_dirty = False
-
-    Product.objects.bulk_update(
-        products, ["search_vector", "updated_at", "search_index_dirty"]
-    )
+# ---------------------------------------------------------------------------
+# Batch driver
+# ---------------------------------------------------------------------------
 
 
-def queryset_in_batches(queryset):
-    """Split a queryset into smaller batches for processing."""
-    start_pk = 0
-
-    while True:
-        qs = queryset.filter(pk__gt=start_pk)[:PRODUCTS_BATCH_SIZE]
-        pks = list(qs.values_list("pk", flat=True))
-
-        if not pks:
-            break
-
-        yield pks
-        start_pk = pks[-1]
-
-
-def update_products_search_vector(product_ids: Iterable[int]):
-    """Update the search vector for a list of product IDs."""
+def update_products_search_vector(product_ids: Iterable[int]) -> None:
+    """Recompute the search vector for the given product IDs."""
     product_ids = list(product_ids)
     products = Product.objects.filter(pk__in=product_ids).order_by("pk")
 
     for product_pks in queryset_in_batches(products):
-        products_batch = list(Product.objects.filter(id__in=product_pks))
-        _prep_product_search_vector_index(products_batch)
+        batch = list(Product.objects.filter(pk__in=product_pks))
+        _prep_product_search_vector_index(batch)
 
 
-def prepare_product_search_vector_value(
-    product: "Product", *, already_prefetched=False
-) -> list[NoValidationSearchVector]:
-    """Prepare search vector values for a product."""
-    if not already_prefetched:
-        prefetch_related_objects([product], *PRODUCT_FIELDS_TO_PREFETCH)
-
-    search_vectors = [
-        NoValidationSearchVector(Value(product.name), config="simple", weight="A"),
-        NoValidationSearchVector(
-            Value(product.description_plaintext), config="simple", weight="C"
-        ),
-        *generate_attributes_search_vector_value(product),
-        *generate_variants_search_vector_value(product),
-    ]
-    return search_vectors
+def queryset_in_batches(queryset: "QuerySet") -> Iterable[list[int]]:
+    """Yield batches of PKs from a queryset, ordered by PK."""
+    start_pk = 0
+    while True:
+        qs = queryset.filter(pk__gt=start_pk)[:PRODUCTS_BATCH_SIZE]
+        pks = list(qs.values_list("pk", flat=True))
+        if not pks:
+            break
+        yield pks
+        start_pk = pks[-1]
 
 
-def generate_variants_search_vector_value(
-    product: "Product",
-) -> list[NoValidationSearchVector]:
-    """Generate search vectors for product variants."""
-    variants = list(product.variants.all()[: settings.PRODUCT_MAX_INDEXED_VARIANTS])
+# ---------------------------------------------------------------------------
+# Per-product vector build
+# ---------------------------------------------------------------------------
 
-    search_vectors = [
-        NoValidationSearchVector(
-            Value(variant.sku), Value(variant.name), config="simple", weight="A"
+
+def _prep_product_search_vector_index(products: list[Product]) -> None:
+    """Compute and persist the search vector for a batch of products."""
+    prefetch_related_objects(products, *PRODUCT_FIELDS_TO_PREFETCH)
+
+    for product in products:
+        product.search_vector = _build_search_vector(product)
+        product.search_index_dirty = False
+
+    Product.objects.bulk_update(
+        products,
+        ["search_vector", "updated_at", "search_index_dirty"],
+    )
+
+
+def _build_search_vector(product: Product) -> SearchVector:
+    """
+    Build the complete search vector for a product by combining:
+
+        - product name (weight A)
+        - product description plaintext (weight C)
+        - product attribute values (weight B)
+        - variant SKU + name + variant attribute values (weight B)
+    """
+    vector = (
+        SearchVector(Value(product.name), weight="A", config="simple")
+        + SearchVector(
+            Value(product.description_plaintext or ""),
+            weight="C",
+            config="simple",
         )
-        if variant.sku
-        else NoValidationSearchVector(Value(variant.name), config="simple", weight="A")
-        for variant in variants
-        if variant.sku or variant.name
-    ]
+    )
 
-    if search_vectors:
-        for variant in variants:
-            search_vectors += generate_attributes_search_vector_value_with_assignment(
-                variant.attributes.all()[: settings.PRODUCT_MAX_INDEXED_ATTRIBUTES]
-            )
+    for text in _product_attribute_texts(product):
+        vector = vector + SearchVector(Value(text), weight="B", config="simple")
 
-    return search_vectors
+    for text in _variant_texts(product):
+        vector = vector + SearchVector(Value(text), weight="B", config="simple")
+
+    return vector
 
 
-def generate_attributes_search_vector_value(
-    product: "Product",
-) -> list[NoValidationSearchVector]:
-    """Generate search vectors for product attributes."""
-    product_attributes = product.product_type.attributeproduct.all()
-    attributes = [pa.attribute for pa in product_attributes][
-        : settings.PRODUCT_MAX_INDEXED_ATTRIBUTES
-    ]
-
-    assigned_values = product.attributevalues.all()
-    values_map = defaultdict(list)
-
-    for av in assigned_values:
-        values_map[av.value.attribute_id].append(av.value)
-
-    search_vectors = []
-
-    for attribute in attributes:
-        values = values_map[attribute.pk][
-            : settings.PRODUCT_MAX_INDEXED_ATTRIBUTE_VALUES
-        ]
-        search_vectors += get_search_vectors_for_values(attribute, values)
-
-    return search_vectors
+# ---------------------------------------------------------------------------
+# Attribute value extraction
+# ---------------------------------------------------------------------------
 
 
-def generate_attributes_search_vector_value_with_assignment(
-    assigned_attributes: "QuerySet",
-) -> list[NoValidationSearchVector]:
-    """Generate search vectors for assigned attributes."""
-    search_vectors = []
+def _product_attribute_texts(product: Product) -> list[str]:
+    """
+    Values for product-scoped attributes applicable to this product's
+    type, capped at PRODUCT_MAX_INDEXED_ATTRIBUTES.
+    """
+    applicable_ids = {
+        link.attribute_id
+        for link in product.product_type.attribute_scope_links.all()
+    }
 
-    for assigned_attribute in assigned_attributes:
-        attribute = assigned_attribute.assignment.attribute
-        values = assigned_attribute.values.all()[
-            : settings.PRODUCT_MAX_INDEXED_ATTRIBUTE_VALUES
-        ]
-        search_vectors += get_search_vectors_for_values(attribute, values)
+    assignments = [
+        a
+        for a in product.assigned_attributes.all()
+        if a.attribute_id in applicable_ids
+    ][: settings.PRODUCT_MAX_INDEXED_ATTRIBUTES]
 
-    return search_vectors
+    return _texts_from_assignments(assignments)
 
 
-def get_search_vectors_for_values(
-    attribute: Attribute, values: Union[list, "QuerySet"]
-) -> list[NoValidationSearchVector]:
-    """Generate search vectors based on attribute input types."""
-    search_vectors = []
+def _variant_texts(product: Product) -> list[str]:
+    """SKU, name, and attribute values for the first N variants."""
+    variants = list(
+        product.variants.all()[: settings.PRODUCT_MAX_INDEXED_VARIANTS]
+    )
 
-    if attribute.input_type in [AttributeInputType.DROPDOWN, AttributeInputType.MULTISELECT]:
-        search_vectors.extend(
-            NoValidationSearchVector(Value(value.name), config="simple", weight="B")
-            for value in values
+    texts: list[str] = []
+
+    for variant in variants:
+        if variant.sku:
+            texts.append(variant.sku)
+        if variant.name:
+            texts.append(variant.name)
+
+        variant_assignments = list(
+            variant.assigned_attributes.all()[
+                : settings.PRODUCT_MAX_INDEXED_ATTRIBUTES
+            ]
         )
-    elif attribute.input_type == AttributeInputType.RICH_TEXT:
-        search_vectors.extend(
-            NoValidationSearchVector(
-                Value(clean_editor_js(value.rich_text, to_string=True)),
-                config="simple",
-                weight="B",
-            )
-            for value in values
-        )
-    elif attribute.input_type == AttributeInputType.PLAIN_TEXT:
-        search_vectors.extend(
-            NoValidationSearchVector(Value(value.plain_text), config="simple", weight="B")
-            for value in values
-        )
-    elif attribute.input_type == AttributeInputType.NUMERIC:
-        unit = attribute.unit
-        search_vectors.extend(
-            NoValidationSearchVector(
-                Value(f"{value.name} {unit}" if unit else value.name),
-                config="simple",
-                weight="B",
-            )
-            for value in values
-        )
-    elif attribute.input_type in [AttributeInputType.DATE, AttributeInputType.DATE_TIME]:
-        search_vectors.extend(
-            NoValidationSearchVector(
-                Value(value.date_time.strftime("%Y-%m-%d %H:%M:%S")),
-                config="simple",
-                weight="B",
-            )
-            for value in values
-        )
+        texts.extend(_texts_from_assignments(variant_assignments))
 
-    return search_vectors
+    return texts
 
 
-def search_products(qs, value):
-    """Perform a search on products using a search query."""
-    if value:
-        query = SearchQuery(value, search_type="websearch", config="simple")
-        lookup = Q(search_vector=query)
-        qs = qs.filter(lookup).annotate(
-            search_rank=SearchRank(F("search_vector"), query)
-        )
-    return qs
+def _texts_from_assignments(
+    assignments: list[AssignedAttribute],
+) -> list[str]:
+    """
+    Extract searchable text from a list of AssignedAttribute rows.
+
+    Handles preset values (dropdown, multiselect, swatch) and raw
+    values (text, number, date, etc.).
+    """
+    texts: list[str] = []
+    for assigned in assignments:
+        text = _assigned_search_text(assigned)
+        if text:
+            texts.append(text)
+    return texts
+
+
+def _assigned_search_text(assigned: AssignedAttribute) -> str:
+    attribute = assigned.attribute
+
+    # Preset value (dropdown / multiselect / swatch)
+    if assigned.attribute_value_id is not None:
+        return assigned.attribute_value.name
+
+    raw = assigned.raw_value
+    if raw is None:
+        return ""
+
+    if isinstance(raw, str):
+        # Rich text stored as JSON
+        if attribute.data_type == "json" and isinstance(raw, dict):
+            return clean_editor_js(raw, to_string=True)
+        return raw
+
+    if isinstance(raw, bool):
+        return "Yes" if raw else "No"
+
+    return str(raw)
+
+
+# ---------------------------------------------------------------------------
+# Query-time
+# ---------------------------------------------------------------------------
+
+
+def search_products(qs: "QuerySet", value: str) -> "QuerySet":
+    """Filter a Product queryset by a websearch-style query."""
+    if not value:
+        return qs
+
+    query = SearchQuery(value, search_type="websearch", config="simple")
+    return qs.filter(search_vector=query).annotate(
+        search_rank=SearchRank(F("search_vector"), query)
+    )

@@ -182,10 +182,6 @@ class Channel(ModelWithMetadata):
     def __str__(self):
         return f"{self.name} ({self.slug})"
 
-    def save(self, *args, **kwargs):
-        """Save channel with validation."""
-        self.full_clean()
-        super().save(*args, **kwargs)
 
     def get_default_currency(self):
         """Get the default currency for this channel."""
@@ -266,7 +262,7 @@ def get_channel_currency(channel):
     """
     if channel:
         return channel.currency_code
-    return settings.DEFAULT_CURRENCY_CODE
+    return settings.DEFAULT_CURRENCY
 
 
 def get_channel_country(channel):

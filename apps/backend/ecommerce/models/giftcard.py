@@ -14,7 +14,6 @@ ecommerce.validators.giftcard rather than inside this model module.
 """
 
 import logging
-import os
 from decimal import Decimal
 
 from django.conf import settings
@@ -283,10 +282,9 @@ class GiftCard(ModelWithMetadata):
         help_text="Current status of the gift card"
     )
     
-    # Balance
     currency = models.CharField(
         max_length=settings.DEFAULT_CURRENCY_CODE_LENGTH,
-        default=os.environ.get("DEFAULT_CURRENCY", "USD"),
+        default=settings.DEFAULT_CURRENCY,
         db_index=True,
         help_text="Currency code"
     )
@@ -463,16 +461,24 @@ class GiftCard(ModelWithMetadata):
                 })
 
     def save(self, *args, **kwargs):
-        """Save gift card with validation and auto-status update."""
+        """Save gift card with automatic status update.
+
+        Does NOT call full_clean() — validation belongs to forms and
+        serializers, not to the model save path. Allows update_fields
+        to be respected and avoids surprising failures during bulk
+        operations.
+        """
         # Auto-update status based on balance and expiry
-        if self.current_balance_amount == 0 and self.status == GiftCardStatus.ACTIVE:
+        if (
+            self.current_balance_amount == Decimal("0")
+            and self.status == GiftCardStatus.ACTIVE
+        ):
             self.status = GiftCardStatus.USED
-        
+
         if self.expiry_date and self.expiry_date < timezone.now().date():
             if self.status == GiftCardStatus.ACTIVE:
                 self.status = GiftCardStatus.EXPIRED
-        
-        self.full_clean()
+
         super().save(*args, **kwargs)
 
     @property
