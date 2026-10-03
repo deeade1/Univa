@@ -25,7 +25,6 @@ from text_unidecode import unidecode
 
 
 if TYPE_CHECKING:
-    from attribute.models import Attribute
     from django.contrib.sites.models import Site
     from django.utils.safestring import SafeText
 

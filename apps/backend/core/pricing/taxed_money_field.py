@@ -17,55 +17,20 @@ Tax is derived:
 The logical TaxedMoney value is persisted through existing Django
 database fields.
 
-Typical usage with a shared currency field:
+Design note
+-----------
 
-    total = TaxedMoneyField(
-        net_amount_field="total_net_amount",
-        gross_amount_field="total_gross_amount",
-        currency_field="currency",
-    )
+TaxedMoneyField is a *virtual* field. It has no database column of
+its own. It installs a descriptor that reads/writes four real
+columns (net amount, gross amount, net currency, gross currency).
 
-This produces the database columns:
+For this reason, `contribute_to_class` deliberately does NOT call
+`super().contribute_to_class()`. Doing so would register the field
+with the model's `_meta.fields`, which makes the ORM look for a
+column that doesn't exist.
 
-    total_net_amount
-    total_gross_amount
-    currency
-
-while Python code works with:
-
-    instance.total
-        -> TaxedMoney(
-            net=Money(...),
-            gross=Money(...),
-        )
-
-Separate currency fields are also supported:
-
-    total = TaxedMoneyField(
-        net_amount_field="total_net_amount",
-        gross_amount_field="total_gross_amount",
-        net_currency_field="total_net_currency",
-        gross_currency_field="total_gross_currency",
-    )
-
-Architecture
-------------
-
-This field is part of Univa's canonical core.pricing layer.
-
-It is intentionally independent of django-prices.
-
-It does NOT:
-
-    - import django_prices
-    - import prices
-    - create authentication/business logic
-    - calculate tax rules
-    - persist a third independent tax amount
-
-Tax calculation belongs to the pricing/tax domain.
-
-The field only represents and persists TaxedMoney.
+The amount and currency columns must be declared separately on the
+model as real `DecimalField` and `CharField`.
 """
 
 from __future__ import annotations
@@ -119,31 +84,11 @@ class TaxedMoneyFieldDescriptor:
         if instance is None:
             return self
 
-        net_amount = getattr(
-            instance,
-            self.net_amount_field,
-            None,
-        )
+        net_amount = getattr(instance, self.net_amount_field, None)
+        gross_amount = getattr(instance, self.gross_amount_field, None)
+        net_currency = getattr(instance, self.net_currency_field, None)
+        gross_currency = getattr(instance, self.gross_currency_field, None)
 
-        gross_amount = getattr(
-            instance,
-            self.gross_amount_field,
-            None,
-        )
-
-        net_currency = getattr(
-            instance,
-            self.net_currency_field,
-            None,
-        )
-
-        gross_currency = getattr(
-            instance,
-            self.gross_currency_field,
-            None,
-        )
-
-        # Completely empty value.
         if (
             net_amount is None
             and gross_amount is None
@@ -152,11 +97,9 @@ class TaxedMoneyFieldDescriptor:
         ):
             return None
 
-        # A partially populated TaxedMoney value is invalid.
         if net_amount is None or gross_amount is None:
             if self.field.null:
                 return None
-
             raise ValueError(
                 f"TaxedMoneyField '{self.field.name}' has incomplete "
                 "amount data."
@@ -165,7 +108,6 @@ class TaxedMoneyFieldDescriptor:
         if not net_currency or not gross_currency:
             if self.field.null:
                 return None
-
             raise ValueError(
                 f"TaxedMoneyField '{self.field.name}' has amount data "
                 "but missing currency data."
@@ -174,22 +116,12 @@ class TaxedMoneyFieldDescriptor:
         net_amount = self.field.normalize_amount(net_amount)
         gross_amount = self.field.normalize_amount(gross_amount)
 
-        net_currency = self.field.normalize_currency(
-            net_currency
-        )
-        gross_currency = self.field.normalize_currency(
-            gross_currency
-        )
+        net_currency = self.field.normalize_currency(net_currency)
+        gross_currency = self.field.normalize_currency(gross_currency)
 
         return TaxedMoney(
-            net=Money(
-                amount=net_amount,
-                currency=net_currency,
-            ),
-            gross=Money(
-                amount=gross_amount,
-                currency=gross_currency,
-            ),
+            net=Money(amount=net_amount, currency=net_currency),
+            gross=Money(amount=gross_amount, currency=gross_currency),
         )
 
     def __set__(
@@ -198,65 +130,29 @@ class TaxedMoneyFieldDescriptor:
         value: TaxedMoney | None,
     ) -> None:
         if value is None:
-            setattr(
-                instance,
-                self.net_amount_field,
-                None,
-            )
+            setattr(instance, self.net_amount_field, None)
+            setattr(instance, self.gross_amount_field, None)
+            setattr(instance, self.net_currency_field, None)
 
-            setattr(
-                instance,
-                self.gross_amount_field,
-                None,
-            )
-
-            setattr(
-                instance,
-                self.net_currency_field,
-                None,
-            )
-
-            # Do not unnecessarily write the same shared currency
-            # field twice.
-            if (
-                self.gross_currency_field
-                != self.net_currency_field
-            ):
-                setattr(
-                    instance,
-                    self.gross_currency_field,
-                    None,
-                )
+            if self.gross_currency_field != self.net_currency_field:
+                setattr(instance, self.gross_currency_field, None)
 
             return
 
         if not isinstance(value, TaxedMoney):
             raise TypeError(
-                (
-                    f"Cannot assign {type(value).__name__} to "
-                    f"TaxedMoneyField '{self.field.name}'. "
-                    "Expected TaxedMoney or None."
-                )
+                f"Cannot assign {type(value).__name__} to "
+                f"TaxedMoneyField '{self.field.name}'. "
+                "Expected TaxedMoney or None."
             )
 
         net = value.net
         gross = value.gross
 
-        net_amount = self.field.normalize_amount(
-            net.amount
-        )
-
-        gross_amount = self.field.normalize_amount(
-            gross.amount
-        )
-
-        net_currency = self.field.normalize_currency(
-            net.currency
-        )
-
-        gross_currency = self.field.normalize_currency(
-            gross.currency
-        )
+        net_amount = self.field.normalize_amount(net.amount)
+        gross_amount = self.field.normalize_amount(gross.amount)
+        net_currency = self.field.normalize_currency(net.currency)
+        gross_currency = self.field.normalize_currency(gross.currency)
 
         self.field.validate_taxed_money_parts(
             net_amount=net_amount,
@@ -265,70 +161,22 @@ class TaxedMoneyFieldDescriptor:
             gross_currency=gross_currency,
         )
 
-        setattr(
-            instance,
-            self.net_amount_field,
-            net_amount,
-        )
+        setattr(instance, self.net_amount_field, net_amount)
+        setattr(instance, self.gross_amount_field, gross_amount)
+        setattr(instance, self.net_currency_field, net_currency)
 
-        setattr(
-            instance,
-            self.gross_amount_field,
-            gross_amount,
-        )
-
-        setattr(
-            instance,
-            self.net_currency_field,
-            net_currency,
-        )
-
-        if (
-            self.gross_currency_field
-            != self.net_currency_field
-        ):
-            setattr(
-                instance,
-                self.gross_currency_field,
-                gross_currency,
-            )
+        if self.gross_currency_field != self.net_currency_field:
+            setattr(instance, self.gross_currency_field, gross_currency)
 
 
 class TaxedMoneyField(models.Field):
     """
     Canonical Univa Django field representing TaxedMoney.
 
-    The field is logical/compound.
-
-    It does not own a database column directly.
-
-    The underlying database representation consists of:
-
-        net amount
-        gross amount
-        currency
-
-    or, when separate currency fields are configured:
-
-        net amount
-        net currency
-        gross amount
-        gross currency
-
-    Example
-    -------
-
-        total = TaxedMoneyField(
-            net_amount_field="total_net_amount",
-            gross_amount_field="total_gross_amount",
-            currency_field="currency",
-        )
+    The field is logical/compound and does not own a database column.
     """
 
-    description = (
-        "A taxed monetary amount containing net and gross values."
-    )
-
+    description = "A taxed monetary amount containing net and gross values."
     empty_strings_allowed = False
 
     def __init__(
@@ -351,17 +199,9 @@ class TaxedMoneyField(models.Field):
     ) -> None:
         self.net_amount_field_name = net_amount_field
         self.gross_amount_field_name = gross_amount_field
-
         self.currency_field_name = currency_field
-
-        self.net_currency_field_name = (
-            net_currency_field or currency_field
-        )
-
-        self.gross_currency_field_name = (
-            gross_currency_field or currency_field
-        )
-
+        self.net_currency_field_name = net_currency_field or currency_field
+        self.gross_currency_field_name = gross_currency_field or currency_field
         self.max_digits = max_digits
         self.decimal_places = decimal_places
         self.currency_max_length = currency_max_length
@@ -369,18 +209,13 @@ class TaxedMoneyField(models.Field):
 
         if not self.net_currency_field_name:
             raise ValueError(
-                (
-                    "TaxedMoneyField requires either 'currency_field' "
-                    "or 'net_currency_field'."
-                )
+                "TaxedMoneyField requires either 'currency_field' "
+                "or 'net_currency_field'."
             )
-
         if not self.gross_currency_field_name:
             raise ValueError(
-                (
-                    "TaxedMoneyField requires either 'currency_field' "
-                    "or 'gross_currency_field'."
-                )
+                "TaxedMoneyField requires either 'currency_field' "
+                "or 'gross_currency_field'."
             )
 
         super().__init__(
@@ -391,59 +226,27 @@ class TaxedMoneyField(models.Field):
             **kwargs,
         )
 
-    # ------------------------------------------------------------------
-    # Django field metadata
-    # ------------------------------------------------------------------
-
     def deconstruct(self):
-        """
-        Return the field definition used by Django migrations.
-        """
-
         name, path, args, kwargs = super().deconstruct()
-
-        kwargs["net_amount_field"] = (
-            self.net_amount_field_name
-        )
-
-        kwargs["gross_amount_field"] = (
-            self.gross_amount_field_name
-        )
+        kwargs["net_amount_field"] = self.net_amount_field_name
+        kwargs["gross_amount_field"] = self.gross_amount_field_name
 
         if self.currency_field_name is not None:
-            kwargs["currency_field"] = (
-                self.currency_field_name
-            )
+            kwargs["currency_field"] = self.currency_field_name
         else:
-            kwargs["net_currency_field"] = (
-                self.net_currency_field_name
-            )
-
-            kwargs["gross_currency_field"] = (
-                self.gross_currency_field_name
-            )
+            kwargs["net_currency_field"] = self.net_currency_field_name
+            kwargs["gross_currency_field"] = self.gross_currency_field_name
 
         if self.max_digits != 20:
             kwargs["max_digits"] = self.max_digits
-
         if self.decimal_places != 2:
             kwargs["decimal_places"] = self.decimal_places
-
         if self.currency_max_length != 3:
-            kwargs["currency_max_length"] = (
-                self.currency_max_length
-            )
-
+            kwargs["currency_max_length"] = self.currency_max_length
         if self.default_currency is not None:
-            kwargs["default_currency"] = (
-                self.default_currency
-            )
+            kwargs["default_currency"] = self.default_currency
 
         return name, path, args, kwargs
-
-    # ------------------------------------------------------------------
-    # Django model integration
-    # ------------------------------------------------------------------
 
     def contribute_to_class(
         self,
@@ -452,86 +255,42 @@ class TaxedMoneyField(models.Field):
         **kwargs: Any,
     ) -> None:
         """
-        Register the logical TaxedMoney field on the model.
+        Install a descriptor that reads/writes four real columns.
 
-        The actual amount/currency fields must already exist on
-        the model.
+        Deliberately does NOT call super().contribute_to_class().
         """
-
-        super().contribute_to_class(
-            cls,
-            name,
-            **kwargs,
-        )
+        self.set_attributes_from_name(name)
+        self.model = cls
+        self.name = name
+        self.attname = name
 
         setattr(
             cls,
-            self.attname,
+            name,
             TaxedMoneyFieldDescriptor(
                 field=self,
-                net_amount_field=(
-                    self.net_amount_field_name
-                ),
-                gross_amount_field=(
-                    self.gross_amount_field_name
-                ),
-                net_currency_field=(
-                    self.net_currency_field_name
-                ),
-                gross_currency_field=(
-                    self.gross_currency_field_name
-                ),
+                net_amount_field=self.net_amount_field_name,
+                gross_amount_field=self.gross_amount_field_name,
+                net_currency_field=self.net_currency_field_name,
+                gross_currency_field=self.gross_currency_field_name,
             ),
         )
 
-    # ------------------------------------------------------------------
-    # Django system checks
-    # ------------------------------------------------------------------
-
     def check(self, **kwargs: Any):
         errors = super().check(**kwargs)
+        errors.extend(self._check_amount_field(self.net_amount_field_name, "net"))
+        errors.extend(self._check_amount_field(self.gross_amount_field_name, "gross"))
+        errors.extend(self._check_currency_field(self.net_currency_field_name, "net"))
 
-        errors.extend(
-            self._check_amount_field(
-                self.net_amount_field_name,
-                "net",
-            )
-        )
-
-        errors.extend(
-            self._check_amount_field(
-                self.gross_amount_field_name,
-                "gross",
-            )
-        )
-
-        errors.extend(
-            self._check_currency_field(
-                self.net_currency_field_name,
-                "net",
-            )
-        )
-
-        if (
-            self.gross_currency_field_name
-            != self.net_currency_field_name
-        ):
+        if self.gross_currency_field_name != self.net_currency_field_name:
             errors.extend(
-                self._check_currency_field(
-                    self.gross_currency_field_name,
-                    "gross",
-                )
+                self._check_currency_field(self.gross_currency_field_name, "gross")
             )
 
         return errors
 
-    def _check_amount_field(
-        self,
-        field_name: str,
-        amount_type: str,
-    ):
+    def _check_amount_field(self, field_name: str, amount_type: str):
         model = self.model
-
         if model is None:
             return []
 
@@ -540,11 +299,8 @@ class TaxedMoneyField(models.Field):
         except models.FieldDoesNotExist:
             return [
                 checks.Error(
-                    (
-                        f"TaxedMoneyField '{self.name}' references "
-                        f"missing {amount_type} amount field "
-                        f"'{field_name}'."
-                    ),
+                    f"TaxedMoneyField '{self.name}' references "
+                    f"missing {amount_type} amount field '{field_name}'.",
                     obj=self,
                     id="pricing.E101",
                 )
@@ -553,11 +309,8 @@ class TaxedMoneyField(models.Field):
         if not isinstance(field, models.DecimalField):
             return [
                 checks.Error(
-                    (
-                        f"TaxedMoneyField '{self.name}' {amount_type} "
-                        f"amount field '{field_name}' must be a "
-                        "DecimalField."
-                    ),
+                    f"TaxedMoneyField '{self.name}' {amount_type} "
+                    f"amount field '{field_name}' must be a DecimalField.",
                     obj=self,
                     id="pricing.E102",
                 )
@@ -565,13 +318,8 @@ class TaxedMoneyField(models.Field):
 
         return []
 
-    def _check_currency_field(
-        self,
-        field_name: str,
-        currency_type: str,
-    ):
+    def _check_currency_field(self, field_name: str, currency_type: str):
         model = self.model
-
         if model is None:
             return []
 
@@ -580,11 +328,8 @@ class TaxedMoneyField(models.Field):
         except models.FieldDoesNotExist:
             return [
                 checks.Error(
-                    (
-                        f"TaxedMoneyField '{self.name}' references "
-                        f"missing {currency_type} currency field "
-                        f"'{field_name}'."
-                    ),
+                    f"TaxedMoneyField '{self.name}' references "
+                    f"missing {currency_type} currency field '{field_name}'.",
                     obj=self,
                     id="pricing.E103",
                 )
@@ -593,11 +338,8 @@ class TaxedMoneyField(models.Field):
         if not isinstance(field, models.CharField):
             return [
                 checks.Error(
-                    (
-                        f"TaxedMoneyField '{self.name}' "
-                        f"{currency_type} currency field "
-                        f"'{field_name}' must be a CharField."
-                    ),
+                    f"TaxedMoneyField '{self.name}' {currency_type} "
+                    f"currency field '{field_name}' must be a CharField.",
                     obj=self,
                     id="pricing.E104",
                 )
@@ -605,71 +347,29 @@ class TaxedMoneyField(models.Field):
 
         return []
 
-    # ------------------------------------------------------------------
-    # Normalization
-    # ------------------------------------------------------------------
-
-    def normalize_amount(
-        self,
-        value: Decimal | int | float | str,
-    ) -> Decimal:
-        """
-        Normalize a monetary amount to the configured precision.
-        """
-
+    def normalize_amount(self, value) -> Decimal:
         try:
             amount = Decimal(str(value))
-        except (
-            InvalidOperation,
-            ValueError,
-            TypeError,
-        ) as exc:
-            raise ValidationError(
-                f"Invalid monetary amount: {value!r}"
-            ) from exc
+        except (InvalidOperation, ValueError, TypeError) as exc:
+            raise ValidationError(f"Invalid monetary amount: {value!r}") from exc
 
         if amount.is_nan() or amount.is_infinite():
-            raise ValidationError(
-                "Monetary amount must be finite."
-            )
+            raise ValidationError("Monetary amount must be finite.")
 
-        return amount.quantize(
-            Decimal("1").scaleb(
-                -self.decimal_places
-            )
-        )
+        return amount.quantize(Decimal("1").scaleb(-self.decimal_places))
 
-    def normalize_currency(
-        self,
-        currency: str,
-    ) -> str:
-        """
-        Normalize and validate a currency code.
-        """
-
+    def normalize_currency(self, currency: str) -> str:
         if currency is None:
             return currency
-
         currency = str(currency).strip().upper()
-
         if not currency:
-            raise ValidationError(
-                "Currency cannot be empty."
-            )
-
+            raise ValidationError("Currency cannot be empty.")
         if len(currency) > self.currency_max_length:
             raise ValidationError(
-                (
-                    f"Currency '{currency}' exceeds the maximum "
-                    f"length of {self.currency_max_length}."
-                )
+                f"Currency '{currency}' exceeds the maximum "
+                f"length of {self.currency_max_length}."
             )
-
         return currency
-
-    # ------------------------------------------------------------------
-    # Validation
-    # ------------------------------------------------------------------
 
     def validate_taxed_money_parts(
         self,
@@ -679,218 +379,92 @@ class TaxedMoneyField(models.Field):
         net_currency: str,
         gross_currency: str,
     ) -> None:
-        """
-        Validate the complete TaxedMoney representation.
-        """
-
         if net_amount.is_nan() or net_amount.is_infinite():
-            raise ValidationError(
-                "Net monetary amount must be finite."
-            )
-
+            raise ValidationError("Net monetary amount must be finite.")
         if gross_amount.is_nan() or gross_amount.is_infinite():
-            raise ValidationError(
-                "Gross monetary amount must be finite."
-            )
-
+            raise ValidationError("Gross monetary amount must be finite.")
         if not net_currency:
-            raise ValidationError(
-                "Net currency is required."
-            )
-
+            raise ValidationError("Net currency is required.")
         if not gross_currency:
-            raise ValidationError(
-                "Gross currency is required."
-            )
-
+            raise ValidationError("Gross currency is required.")
         if net_currency != gross_currency:
             raise ValidationError(
-                (
-                    "TaxedMoney net and gross values must use the "
-                    "same currency: "
-                    f"{net_currency} != {gross_currency}."
-                )
+                "TaxedMoney net and gross values must use the "
+                f"same currency: {net_currency} != {gross_currency}."
             )
-
-    # ------------------------------------------------------------------
-    # Defaults
-    # ------------------------------------------------------------------
 
     def get_default(self):
-        """
-        Return a logical TaxedMoney default.
-
-        A TaxedMoney instance may be supplied directly.
-
-        Numeric defaults require default_currency and produce
-        zero tax:
-
-            net = default
-            gross = default
-        """
-
         default = self.default
-
         if callable(default):
             default = default()
-
         if default is None:
             return None
-
         if isinstance(default, TaxedMoney):
             return default
-
         if self.default_currency is None:
             raise ValueError(
-                (
-                    f"TaxedMoneyField '{self.name}' has a numeric "
-                    "default but no default_currency."
-                )
+                f"TaxedMoneyField '{self.name}' has a numeric "
+                "default but no default_currency."
             )
-
         amount = self.normalize_amount(default)
-        currency = self.normalize_currency(
-            self.default_currency
-        )
-
-        money = Money(
-            amount=amount,
-            currency=currency,
-        )
-
-        return TaxedMoney(
-            net=money,
-            gross=money,
-        )
-
-    # ------------------------------------------------------------------
-    # Python conversion
-    # ------------------------------------------------------------------
+        currency = self.normalize_currency(self.default_currency)
+        money = Money(amount=amount, currency=currency)
+        return TaxedMoney(net=money, gross=money)
 
     def to_python(self, value):
-        """
-        Convert supported Python representations into TaxedMoney.
-
-        Database loading is handled by the descriptor because the
-        actual database columns belong to the underlying fields.
-        """
-
         if value is None:
             return None
-
         if isinstance(value, TaxedMoney):
             return value
-
         if isinstance(value, dict):
             net = value.get("net")
             gross = value.get("gross")
-
             if net is None or gross is None:
                 raise ValidationError(
-                    (
-                        "TaxedMoney requires both 'net' and "
-                        "'gross'."
-                    )
+                    "TaxedMoney requires both 'net' and 'gross'."
                 )
-
             net_money = self._money_from_value(net)
             gross_money = self._money_from_value(gross)
-
-            return TaxedMoney(
-                net=net_money,
-                gross=gross_money,
-            )
-
+            return TaxedMoney(net=net_money, gross=gross_money)
         return value
 
-    def _money_from_value(
-        self,
-        value: Any,
-    ) -> Money:
-        """
-        Convert a supported value into Money.
-        """
-
+    def _money_from_value(self, value: Any) -> Money:
         if isinstance(value, Money):
             return value
-
         if not isinstance(value, dict):
             raise ValidationError(
                 "Money must be a Money instance or dictionary."
             )
-
         amount = value.get("amount")
         currency = value.get("currency")
-
         if amount is None or currency is None:
-            raise ValidationError(
-                "Money requires both amount and currency."
-            )
-
+            raise ValidationError("Money requires both amount and currency.")
         return Money(
             amount=self.normalize_amount(amount),
             currency=self.normalize_currency(currency),
         )
 
-    # ------------------------------------------------------------------
-    # Database preparation
-    # ------------------------------------------------------------------
-
     def get_prep_value(self, value):
-        """
-        This logical field does not directly own a database column.
-
-        The underlying DecimalField and CharField instances prepare
-        their respective database values.
-        """
-
         if value is None:
             return None
-
         if isinstance(value, TaxedMoney):
             return value.net.amount
-
         return value
 
-    # ------------------------------------------------------------------
-    # Form integration
-    # ------------------------------------------------------------------
-
     def formfield(self, **kwargs):
-        """
-        Until a dedicated Univa Money/TaxedMoney form field exists,
-        expose the net amount as the primary form representation.
-
-        Model forms should normally expose the underlying amount and
-        currency fields independently.
-        """
-
-        defaults = {
-            "required": not self.blank,
-        }
-
+        defaults = {"required": not self.blank}
         defaults.update(kwargs)
-
         return models.DecimalField(
             max_digits=self.max_digits,
             decimal_places=self.decimal_places,
         ).formfield(**defaults)
 
-    # ------------------------------------------------------------------
-    # String representation
-    # ------------------------------------------------------------------
-
     def __str__(self) -> str:
         return (
             "TaxedMoneyField("
-            f"net_amount_field="
-            f"{self.net_amount_field_name!r}, "
-            f"gross_amount_field="
-            f"{self.gross_amount_field_name!r}, "
-            f"net_currency_field="
-            f"{self.net_currency_field_name!r}, "
-            f"gross_currency_field="
-            f"{self.gross_currency_field_name!r}"
+            f"net_amount_field={self.net_amount_field_name!r}, "
+            f"gross_amount_field={self.gross_amount_field_name!r}, "
+            f"net_currency_field={self.net_currency_field_name!r}, "
+            f"gross_currency_field={self.gross_currency_field_name!r}"
             ")"
         )
-

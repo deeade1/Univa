@@ -1,14 +1,20 @@
+# core/models/__init__.py
 
-class JobStatus:
-    PENDING = "pending"
-    SUCCESS = "success"
-    FAILED = "failed"
-    DELETED = "deleted"
+# ---------------------------------------------------------------------
+# Shared enums
+# ---------------------------------------------------------------------
+# These must be defined before any sibling-module imports below,
+# because leaf modules (metadata.py, etc.) import from this namespace.
+# ---------------------------------------------------------------------
 
-    CHOICES = [
-        (PENDING, "Pending"),
-        (SUCCESS, "Success"),
-        (FAILED, "Failed"),
-        (DELETED, "Deleted"),
-    ]
+# ---------------------------------------------------------------------
+# Model exports
+# ---------------------------------------------------------------------
 
+from core.models.region import (  # noqa: F401, E402
+    Region,
+    RegionLevel,
+    RegionTranslation,
+)
+
+# ... whatever else your __init__.py had below this line
