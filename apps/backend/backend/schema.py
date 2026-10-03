@@ -93,8 +93,8 @@ from graphq.chat.subscription import ChatSubscriptions
 
 
 # Invoice
-from graphq.invoice.mutations import InvoiceMutations
-from graphq.invoice.schema import InvoiceQuery
+#from graphq.invoice.mutations import InvoiceMutations
+#from graphq.invoice.schema import InvoiceQuery
 
 
 # Payments
@@ -161,7 +161,7 @@ class Query(
     BlogQueries,
     ChatQueries,
     SocialQueries,
-    InvoiceQuery,
+    #InvoiceQuery,
     PaymentQueries,
     RealestateQueries,
     TransportQuery,
@@ -218,7 +218,7 @@ class Mutation(
     BlogMutations,
     ChatMutations,
     SocialMutations,
-    InvoiceMutations,
+    #InvoiceMutations,
     PaymentMutations,
     RealEstateMutations,
     TransportMutations,

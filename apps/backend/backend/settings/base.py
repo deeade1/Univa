@@ -602,7 +602,8 @@ TWILIO_WHATSAPP_FROM = config('TWILIO_WHATSAPP_FROM', '')
 
 # Phone and country defaults
 DEFAULT_PHONE_REGION = 'NG'
-DEFAULT_COUNTRY = os.getenv("DEFAULT_COUNTRY", "NG")
+DEFAULT_CURRENCY_CODE_LENGTH = 3
+DEFAULT_CURRENCY = "NGN"
 DEFAULT_DECIMAL_PLACES = 3
 DEFAULT_MAX_DIGITS = 12
 DEFAULT_CURRENCY_CODE_LENGTH = 3
@@ -755,7 +756,7 @@ ENCRYPTION_KEY = config(
     "ENCRYPTION_KEY",
     default="-T1gt706CYI2F-RJCZWdKmv40r9F0w15iq_w8OYgljc=",
 )
-
+REGION_AUTO_CREATE = True
 # For production, consider using cloud storage
 # DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
 
