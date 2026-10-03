@@ -160,6 +160,11 @@ class PaymentExecution(models.Model):
     updated_at = models.DateTimeField(
         auto_now=True,
     )
+    banking_transaction_reference = models.CharField(
+        max_length=50,
+        null=True,
+        blank=True,
+    )
 
     class Meta:
         app_label = "payment_canonical"

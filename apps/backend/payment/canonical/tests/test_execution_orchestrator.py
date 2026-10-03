@@ -8,6 +8,9 @@ from payment.canonical.models import (
     PaymentExecution,
     PaymentExecutionEvent,
 )
+from payment.canonical.services.execution import (
+    PaymentExecutionService,
+)
 from payment.canonical.services.execution_event import (
     PaymentExecutionEventService,
 )
@@ -606,39 +609,45 @@ class ExecutionOrchestratorTests(TestCase):
             adapter.get_status_called
         )
 
-    def test_orchestrator_does_not_mutate_payment_directly(self):
-        original_status = self.payment.status
-        original_amount = self.payment.amount
-        original_currency = self.payment.currency
-
+    def test_orchestrator_synchronizes_payment_through_synchronization_service(
+        self,
+    ):
         result = ProviderResult(
             status=PaymentExecution.Status.COMPLETED,
-            provider_reference="FAKE-PAYMENT-001",
+            provider_reference="PROVIDER-COMPLETED-123",
         )
 
         self.register_adapter(result)
 
-        ExecutionOrchestrator.execute(
-            self.execution
+        execution = PaymentExecutionService.create_execution(
+            payment=self.payment,
+            route_type=PaymentExecution.RouteType.BANK_TRANSFER,
+            provider="fake_provider",
+            idempotency_key="orchestrator-payment-sync",
         )
-
-        self.payment.refresh_from_db()
 
         self.assertEqual(
             self.payment.status,
-            original_status,
+            Payment.Status.PENDING,
+        )
+
+        returned_execution = ExecutionOrchestrator.execute(
+            execution
+        )
+
+        self.payment.refresh_from_db()
+        returned_execution.refresh_from_db()
+
+        self.assertEqual(
+            returned_execution.status,
+            PaymentExecution.Status.COMPLETED,
         )
 
         self.assertEqual(
-            self.payment.amount,
-            original_amount,
+            self.payment.status,
+            Payment.Status.COMPLETED,
         )
-
-        self.assertEqual(
-            self.payment.currency,
-            original_currency,
-        )
-
+    
     def test_orchestrator_does_not_create_retry_execution(self):
         result = ProviderResult(
             status=PaymentExecution.Status.FAILED,

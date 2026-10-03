@@ -12,6 +12,9 @@ from payment.canonical.services.execution_lifecycle import (
     PaymentExecutionLifecycle,
 )
 from payment.canonical.services.execution_router import ExecutionRouter
+from payment.canonical.services.synchronization import (
+    PaymentExecutionSynchronization,
+)
 
 
 class ExecutionOrchestrator:
@@ -21,9 +24,11 @@ class ExecutionOrchestrator:
     Responsibilities:
         - resolve the provider adapter
         - move the execution into PROCESSING
+        - synchronize the Payment into PROCESSING
         - initiate the provider execution
         - record normalized provider events
         - apply the corresponding execution lifecycle transition
+        - synchronize the resulting execution state to the Payment
 
     This service does not:
         - implement provider-specific logic
@@ -34,6 +39,7 @@ class ExecutionOrchestrator:
         - call get_status()
         - bypass PaymentExecutionLifecycle
         - bypass PaymentExecutionEventService
+        - bypass PaymentExecutionSynchronization
     """
 
     @classmethod
@@ -78,7 +84,7 @@ class ExecutionOrchestrator:
             raise ValidationError(
                 {
                     "status": (
-                        f"Provider returned unsupported execution "
+                        "Provider returned unsupported execution "
                         f"status: {status}."
                     )
                 }
@@ -141,7 +147,7 @@ class ExecutionOrchestrator:
                 )
             }
         )
-    
+
     @classmethod
     @transaction.atomic
     def execute(cls, execution):
@@ -154,6 +160,8 @@ class ExecutionOrchestrator:
                 ↓
             PROCESSING
                 ↓
+            Synchronize Payment
+                ↓
             ProviderAdapter.initiate()
                 ↓
             ProviderResult
@@ -161,6 +169,8 @@ class ExecutionOrchestrator:
             Provider event
                 ↓
             Execution lifecycle transition
+                ↓
+            Synchronize Payment
         """
         cls._validate_execution(execution)
 
@@ -168,6 +178,21 @@ class ExecutionOrchestrator:
 
         # The execution attempt has now begun.
         execution = PaymentExecutionLifecycle.mark_processing(
+            execution
+        )
+
+        # Synchronize the overall Payment now that execution
+        # has entered PROCESSING.
+        #
+        # This normally drives:
+        #
+        #     Payment.PENDING → Payment.PROCESSING
+        #
+        # It must happen before the provider result is applied so
+        # that a provider COMPLETED result can subsequently drive:
+        #
+        #     Payment.PROCESSING → Payment.COMPLETED
+        PaymentExecutionSynchronization.synchronize(
             execution
         )
 
@@ -194,7 +219,28 @@ class ExecutionOrchestrator:
             payload=result.metadata,
         )
 
-        return cls._apply_lifecycle(
+        # Apply the normalized provider result to the individual
+        # PaymentExecution.
+        execution = cls._apply_lifecycle(
             execution,
             result,
         )
+
+        # Synchronize the resulting execution state back to the
+        # overall Payment lifecycle.
+        #
+        # Examples:
+        #
+        #     COMPLETED  → Payment.PROCESSING → Payment.COMPLETED
+        #     PENDING    → Payment remains PROCESSING
+        #     FAILED     → Payment remains PROCESSING
+        #     CANCELLED  → Payment remains PROCESSING
+        #
+        # A failed/cancelled individual execution does not
+        # automatically terminalize the overall Payment because
+        # another execution attempt may still be created.
+        PaymentExecutionSynchronization.synchronize(
+            execution
+        )
+
+        return execution
