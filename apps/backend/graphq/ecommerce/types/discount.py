@@ -632,9 +632,6 @@ class PromotionNode(OptimizedDjangoObjectType):
             # Boolean fields
             'is_active': ['exact'],
             
-            # Numeric fields
-            'old_sale_id': ['exact', 'isnull'],
-            
             # Date fields
             'start_date': ['exact', 'gte', 'lte'],
             'end_date': ['exact', 'gte', 'lte', 'isnull'],
