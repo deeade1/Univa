@@ -105,18 +105,23 @@ class PaymentExecutionSynchronizationTests(TestCase):
             )
 
     def test_created_execution_does_not_change_payment(self):
-        returned_payment = (
+        returned_execution = (
             PaymentExecutionSynchronization.synchronize(
                 self.execution
             )
         )
 
-        self.payment.refresh_from_db()
+        self.assertIsInstance(
+            returned_execution,
+            PaymentExecution,
+        )
 
         self.assertEqual(
-            returned_payment.id,
-            self.payment.id,
+            returned_execution.pk,
+            self.execution.pk,
         )
+
+        self.payment.refresh_from_db()
 
         self.assertEqual(
             self.payment.status,
@@ -128,15 +133,15 @@ class PaymentExecutionSynchronizationTests(TestCase):
             PaymentExecution.Status.PROCESSING
         )
 
-        returned_payment = (
+        returned_execution = (
             PaymentExecutionSynchronization.synchronize(
                 self.execution
             )
         )
 
-        self.assertEqual(
-            returned_payment.status,
-            Payment.Status.PROCESSING,
+        self.assertIsInstance(
+            returned_execution,
+            PaymentExecution,
         )
 
         self.payment.refresh_from_db()
@@ -159,15 +164,15 @@ class PaymentExecutionSynchronizationTests(TestCase):
             PaymentExecution.Status.PROCESSING
         )
 
-        returned_payment = (
+        returned_execution = (
             PaymentExecutionSynchronization.synchronize(
                 self.execution
             )
         )
 
-        self.assertEqual(
-            returned_payment.status,
-            Payment.Status.PROCESSING,
+        self.assertIsInstance(
+            returned_execution,
+            PaymentExecution,
         )
 
         self.payment.refresh_from_db()
@@ -182,15 +187,15 @@ class PaymentExecutionSynchronizationTests(TestCase):
             PaymentExecution.Status.PENDING
         )
 
-        returned_payment = (
+        returned_execution = (
             PaymentExecutionSynchronization.synchronize(
                 self.execution
             )
         )
 
-        self.assertEqual(
-            returned_payment.status,
-            Payment.Status.PENDING,
+        self.assertIsInstance(
+            returned_execution,
+            PaymentExecution,
         )
 
         self.payment.refresh_from_db()
@@ -209,15 +214,15 @@ class PaymentExecutionSynchronizationTests(TestCase):
             PaymentExecution.Status.PENDING
         )
 
-        returned_payment = (
+        returned_execution = (
             PaymentExecutionSynchronization.synchronize(
                 self.execution
             )
         )
 
-        self.assertEqual(
-            returned_payment.status,
-            Payment.Status.PROCESSING,
+        self.assertIsInstance(
+            returned_execution,
+            PaymentExecution,
         )
 
         self.payment.refresh_from_db()
@@ -236,15 +241,15 @@ class PaymentExecutionSynchronizationTests(TestCase):
             PaymentExecution.Status.COMPLETED
         )
 
-        returned_payment = (
+        returned_execution = (
             PaymentExecutionSynchronization.synchronize(
                 self.execution
             )
         )
 
-        self.assertEqual(
-            returned_payment.status,
-            Payment.Status.COMPLETED,
+        self.assertIsInstance(
+            returned_execution,
+            PaymentExecution,
         )
 
         self.payment.refresh_from_db()
@@ -270,15 +275,15 @@ class PaymentExecutionSynchronizationTests(TestCase):
             PaymentExecution.Status.COMPLETED
         )
 
-        returned_payment = (
+        returned_execution = (
             PaymentExecutionSynchronization.synchronize(
                 self.execution
             )
         )
 
-        self.assertEqual(
-            returned_payment.status,
-            Payment.Status.COMPLETED,
+        self.assertIsInstance(
+            returned_execution,
+            PaymentExecution,
         )
 
         self.payment.refresh_from_db()
@@ -310,15 +315,15 @@ class PaymentExecutionSynchronizationTests(TestCase):
             PaymentExecution.Status.FAILED
         )
 
-        returned_payment = (
+        returned_execution = (
             PaymentExecutionSynchronization.synchronize(
                 self.execution
             )
         )
 
-        self.assertEqual(
-            returned_payment.status,
-            Payment.Status.PENDING,
+        self.assertIsInstance(
+            returned_execution,
+            PaymentExecution,
         )
 
         self.payment.refresh_from_db()
@@ -337,15 +342,15 @@ class PaymentExecutionSynchronizationTests(TestCase):
             PaymentExecution.Status.FAILED
         )
 
-        returned_payment = (
+        returned_execution = (
             PaymentExecutionSynchronization.synchronize(
                 self.execution
             )
         )
 
-        self.assertEqual(
-            returned_payment.status,
-            Payment.Status.PROCESSING,
+        self.assertIsInstance(
+            returned_execution,
+            PaymentExecution,
         )
 
         self.payment.refresh_from_db()
@@ -360,15 +365,15 @@ class PaymentExecutionSynchronizationTests(TestCase):
             PaymentExecution.Status.CANCELLED
         )
 
-        returned_payment = (
+        returned_execution = (
             PaymentExecutionSynchronization.synchronize(
                 self.execution
             )
         )
 
-        self.assertEqual(
-            returned_payment.status,
-            Payment.Status.PENDING,
+        self.assertIsInstance(
+            returned_execution,
+            PaymentExecution,
         )
 
         self.payment.refresh_from_db()
@@ -387,15 +392,15 @@ class PaymentExecutionSynchronizationTests(TestCase):
             PaymentExecution.Status.CANCELLED
         )
 
-        returned_payment = (
+        returned_execution = (
             PaymentExecutionSynchronization.synchronize(
                 self.execution
             )
         )
 
-        self.assertEqual(
-            returned_payment.status,
-            Payment.Status.PROCESSING,
+        self.assertIsInstance(
+            returned_execution,
+            PaymentExecution,
         )
 
         self.payment.refresh_from_db()
@@ -590,7 +595,7 @@ class PaymentExecutionSynchronizationTests(TestCase):
             self.payment.status,
             Payment.Status.REVERSED,
         )
- 
+
     def test_synchronization_is_atomic_when_payment_transition_fails(self):
         self.set_execution_status(
             PaymentExecution.Status.COMPLETED

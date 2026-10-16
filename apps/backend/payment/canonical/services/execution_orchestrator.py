@@ -15,6 +15,9 @@ from payment.canonical.services.execution_router import ExecutionRouter
 from payment.canonical.services.synchronization import (
     PaymentExecutionSynchronization,
 )
+from payment.canonical.services.reconciliation_enqueue import (
+    ReconciliationEnqueueAdapter,
+)
 
 
 class ExecutionOrchestrator:
@@ -27,12 +30,13 @@ class ExecutionOrchestrator:
         - synchronize the Payment into PROCESSING
         - initiate the provider execution
         - record normalized provider events
+        - mirror provider identity onto the execution
         - apply the corresponding execution lifecycle transition
         - synchronize the resulting execution state to the Payment
+        - enqueue reconciliation when required
 
     This service does not:
         - implement provider-specific logic
-        - mutate PaymentExecution directly
         - mutate Payment directly
         - create retries
         - perform reconciliation
@@ -40,6 +44,7 @@ class ExecutionOrchestrator:
         - bypass PaymentExecutionLifecycle
         - bypass PaymentExecutionEventService
         - bypass PaymentExecutionSynchronization
+        - call the reconciliation task directly
     """
 
     @classmethod
@@ -108,6 +113,30 @@ class ExecutionOrchestrator:
         )
 
     @classmethod
+    def _apply_provider_identity(cls, execution, result):
+        """
+        Persist provider-supplied identity onto the execution.
+
+        The event log remains the immutable history.
+
+        This mirrors the current-state field on the execution so
+        downstream systems (reconciliation, support tooling, webhook
+        matching) do not have to traverse events to find it.
+
+        Must be called after _record_event() and before
+        _apply_lifecycle(), so that lifecycle's full_clean()/save()
+        validates and persists provider_reference in a single write.
+        """
+        if not result.provider_reference:
+            return
+
+        if execution.provider_reference == result.provider_reference:
+            return
+
+        execution.provider_reference = result.provider_reference
+        execution.save(update_fields=["provider_reference"])
+
+    @classmethod
     def _apply_lifecycle(cls, execution, result):
         status = result.status
 
@@ -162,15 +191,21 @@ class ExecutionOrchestrator:
                 ↓
             Synchronize Payment
                 ↓
+            Record PROCESSING event
+                ↓
             ProviderAdapter.initiate()
                 ↓
             ProviderResult
                 ↓
-            Provider event
+            Record provider event
+                ↓
+            Mirror provider identity onto execution
                 ↓
             Execution lifecycle transition
                 ↓
-            Synchronize Payment
+            Synchronize resulting execution state to Payment
+                ↓
+            Enqueue reconciliation when required
         """
         cls._validate_execution(execution)
 
@@ -219,6 +254,15 @@ class ExecutionOrchestrator:
             payload=result.metadata,
         )
 
+        # Mirror provider identity onto the execution before the
+        # lifecycle transition fires, so full_clean()/save() inside
+        # mark_completed/mark_failed/mark_pending validates and
+        # persists provider_reference together with the transition.
+        cls._apply_provider_identity(
+            execution,
+            result,
+        )
+
         # Apply the normalized provider result to the individual
         # PaymentExecution.
         execution = cls._apply_lifecycle(
@@ -227,20 +271,16 @@ class ExecutionOrchestrator:
         )
 
         # Synchronize the resulting execution state back to the
-        # overall Payment lifecycle.
-        #
-        # Examples:
-        #
-        #     COMPLETED  → Payment.PROCESSING → Payment.COMPLETED
-        #     PENDING    → Payment remains PROCESSING
-        #     FAILED     → Payment remains PROCESSING
-        #     CANCELLED  → Payment remains PROCESSING
-        #
-        # A failed/cancelled individual execution does not
-        # automatically terminalize the overall Payment because
-        # another execution attempt may still be created.
+        # overall Payment lifecycle before any reconciliation work
+        # is enqueued.
         PaymentExecutionSynchronization.synchronize(
             execution
+        )
+
+        # Reconciliation is only eligible after the resulting
+        # execution state has been synchronized.
+        ReconciliationEnqueueAdapter.enqueue(
+            execution=execution,
         )
 
         return execution

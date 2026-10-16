@@ -85,7 +85,10 @@ class ReconciliationOrchestrator:
             reconciliation,
         )
 
-        execution = PaymentExecutionSynchronization.synchronize(
+        # PaymentExecutionSynchronization.synchronize() returns the
+        # synchronized Payment, NOT the PaymentExecution. Do not
+        # rebind `execution` to its return value.
+        PaymentExecutionSynchronization.synchronize(
             execution,
         )
 

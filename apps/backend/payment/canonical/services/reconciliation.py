@@ -5,10 +5,10 @@ from typing import Any, Mapping
 from django.core.exceptions import ValidationError
 
 from payment.canonical.models import PaymentExecution
-from dataclasses import dataclass, field
 from payment.canonical.services.execution_lifecycle import (
     PaymentExecutionLifecycle,
 )
+
 
 @dataclass(frozen=True)
 class ReconciliationEvidence:
@@ -68,7 +68,6 @@ class ReconciliationEvidence:
                 {"currency": "Evidence currency must contain exactly 3 characters."}
             )
 
-        
         object.__setattr__(self, "source", self.source.strip())
         object.__setattr__(self, "status", self.status.strip().lower())
         object.__setattr__(self, "currency", currency)
@@ -145,12 +144,14 @@ class ReconciliationService:
         WEBHOOK = "webhook"
         BANKING = "banking"
         INTERNAL = "internal"
+        SYSTEM = "system"
 
     class Outcome:
         COMPLETED = PaymentExecution.Status.COMPLETED
         FAILED = PaymentExecution.Status.FAILED
         CANCELLED = PaymentExecution.Status.CANCELLED
         PENDING = PaymentExecution.Status.PENDING
+        PROCESSING = PaymentExecution.Status.PROCESSING
         CONFLICT = "conflict"
 
     _VALID_SOURCES = {
@@ -158,6 +159,7 @@ class ReconciliationService:
         Source.WEBHOOK,
         Source.BANKING,
         Source.INTERNAL,
+        Source.SYSTEM,
     }
 
     _VALID_OUTCOMES = {
@@ -165,7 +167,27 @@ class ReconciliationService:
         Outcome.FAILED,
         Outcome.CANCELLED,
         Outcome.PENDING,
+        Outcome.PROCESSING,
         Outcome.CONFLICT,
+    }
+
+    # Non-terminal evidence statuses. These describe in-flight
+    # execution state and never terminalize a reconciliation.
+    _NON_TERMINAL_STATUSES = {
+        Outcome.PENDING,
+        Outcome.PROCESSING,
+    }
+
+    # Terminal evidence statuses. Any one of these establishes a
+    # final financial outcome.
+    #
+    # Two *different* terminal statuses do NOT resolve by
+    # precedence. A disagreement between two authoritative sources
+    # is surfaced as CONFLICT and requires human reconciliation.
+    _TERMINAL_STATUSES = {
+        Outcome.COMPLETED,
+        Outcome.FAILED,
+        Outcome.CANCELLED,
     }
 
     @classmethod
@@ -212,6 +234,7 @@ class ReconciliationService:
             cls.Outcome.FAILED,
             cls.Outcome.CANCELLED,
             cls.Outcome.PENDING,
+            cls.Outcome.PROCESSING,
         }:
             raise ValidationError(
                 {
@@ -270,11 +293,52 @@ class ReconciliationService:
 
     @classmethod
     def _determine_outcome(cls, evidence):
+        """
+        Determine the reconciliation outcome from evidence.
+
+        Rules:
+
+            1. Terminal evidence overrides non-terminal evidence.
+               {PROCESSING, COMPLETED}  → COMPLETED
+               {PENDING, COMPLETED}     → COMPLETED
+               {PENDING, PROCESSING}    → PENDING
+
+            2. Two *different* terminal statuses are a genuine
+               conflict and are surfaced as CONFLICT, not resolved
+               by precedence. If the provider reports COMPLETED
+               and the bank reports FAILED, that is exactly the
+               case reconciliation exists to catch.
+
+               {COMPLETED, FAILED}      → CONFLICT
+               {COMPLETED, CANCELLED}   → CONFLICT
+               {FAILED, CANCELLED}      → CONFLICT
+
+            3. If only non-terminal evidence is present, the batch
+               is unresolved. PROCESSING and PENDING are treated
+               as equivalent: both produce Outcome.PENDING with
+               reconciliation required.
+
+            4. An empty evidence list is rejected earlier by
+               _validate_all_evidence, so it cannot reach here.
+        """
+
         statuses = {item.status for item in evidence}
 
-        if len(statuses) == 1:
-            return next(iter(statuses))
+        terminal_statuses = statuses & cls._TERMINAL_STATUSES
 
+        # Rule 2: two different terminals is a conflict.
+        if len(terminal_statuses) > 1:
+            return cls.Outcome.CONFLICT
+
+        # Rule 1: a single terminal wins over any non-terminal.
+        if len(terminal_statuses) == 1:
+            return next(iter(terminal_statuses))
+
+        # Rule 3: only non-terminal evidence.
+        if statuses & cls._NON_TERMINAL_STATUSES:
+            return cls.Outcome.PENDING
+
+        # Unreachable: _validate_evidence rejects any unknown status.
         return cls.Outcome.CONFLICT
 
     @classmethod
@@ -355,7 +419,7 @@ class ReconciliationService:
             evidence_count=len(evidence),
             metadata=metadata,
         )
-        
+
     @classmethod
     def apply_result(
         cls,

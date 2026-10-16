@@ -1,3 +1,5 @@
+# payment/canonical/services/event_evidence.py
+
 """
 PaymentExecutionEvent -> ReconciliationEvidence adapter.
 
@@ -15,8 +17,37 @@ This adapter must NOT:
     - transition lifecycle state
     - perform reconciliation
     - create another event
-"""
 
+Event classification
+--------------------
+
+PaymentExecutionEvent types fall into two categories:
+
+    1. Outcome events
+       Represent a financial outcome or a provider-reported
+       in-flight outcome that can be evaluated by reconciliation.
+
+           PROCESSING
+           PROVIDER_PENDING
+           PROVIDER_COMPLETED
+           PROVIDER_FAILED
+           PROVIDER_CANCELLED
+
+    2. Timeline / acknowledgement markers
+       Represent internal orchestration progress or a provider
+       acknowledgement that does not by itself establish a
+       financial outcome. These are useful for audit and debugging
+       but are NOT reconciliation evidence.
+
+           CREATED
+           PROVIDER_ACCEPTED
+           RECONCILIATION_REQUIRED
+           RECONCILED
+
+Marker events are excluded by omission from EVENT_TYPE_TO_STATUS.
+to_evidence() raises ValidationError for them; the evidence
+collector silently skips such events.
+"""
 
 from django.core.exceptions import ValidationError
 
@@ -35,6 +66,13 @@ class PaymentExecutionEventEvidenceAdapter:
     Convert a PaymentExecutionEvent into ReconciliationEvidence.
     """
 
+    # Only events that establish a financial outcome or an
+    # in-flight processing state are treated as reconciliation
+    # evidence.
+    #
+    # CREATED, PROVIDER_ACCEPTED, and reconciliation meta-events
+    # are timeline/acknowledgement markers, not evidence. They
+    # are excluded by omission.
     EVENT_TYPE_TO_STATUS = {
         PaymentExecutionEvent.EventType.PROCESSING:
             PaymentExecution.Status.PROCESSING,
@@ -71,8 +109,8 @@ class PaymentExecutionEventEvidenceAdapter:
 
         if status is None:
             raise ValidationError(
-                f"Event type '{event.event_type}' cannot be used as "
-                "reconciliation status evidence."
+                f"Event type '{event.event_type}' does not represent "
+                "a reconciliation-relevant outcome."
             )
 
         return ReconciliationEvidence(

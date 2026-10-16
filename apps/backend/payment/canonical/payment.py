@@ -240,10 +240,18 @@ class Payment(models.Model):
         # Direction-specific party requirements
         # ---------------------------------------------------------
         if self.direction == self.Direction.DISBURSE:
-            if self.beneficiary_id is None:
-                errors["beneficiary"] = _(
-                    "A beneficiary is required for a disbursement."
-                )
+            # Refunds route back through the original payment's
+            # instrument, not through an explicit beneficiary. The
+            # destination is captured in metadata (original_payment_id,
+            # instrument_id) and resolved by the provider adapter.
+            #
+            # Every other DISBURSE operation (vendor payout, driver
+            # payout, etc.) still requires an explicit beneficiary.
+            if self.purpose != self.Purpose.REFUND:
+                if self.beneficiary_id is None:
+                    errors["beneficiary"] = _(
+                        "A beneficiary is required for a disbursement."
+                    )
 
         if self.direction == self.Direction.RECEIVE:
             # A receive operation may originate from an external payer,

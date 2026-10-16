@@ -251,7 +251,13 @@ class ReconciliationServiceTests(TestCase):
         self.assertTrue(result.requires_reconciliation)
         self.assertFalse(result.is_reconciled)
 
-    def test_pending_and_completed_evidence_is_conflict(self):
+    def test_pending_and_completed_evidence_resolves_to_completed(self):
+        """
+        Terminal evidence overrides non-terminal evidence:
+        a PROVIDER PENDING alongside a BANKING COMPLETED
+        resolves to COMPLETED, not CONFLICT.
+        """
+
         result = ReconciliationService.reconcile(
             self.execution,
             [
@@ -268,6 +274,73 @@ class ReconciliationServiceTests(TestCase):
 
         self.assertEqual(
             result.outcome,
+            ReconciliationService.Outcome.COMPLETED,
+        )
+
+        self.assertEqual(
+            result.reconciliation_state,
+            PaymentExecution.ReconciliationState.RECONCILED,
+        )
+
+        self.assertFalse(result.is_conflict)
+
+    def test_pending_and_failed_evidence_resolves_to_failed(self):
+        """
+        Terminal evidence overrides non-terminal evidence:
+        a PROVIDER PENDING alongside a BANKING FAILED
+        resolves to FAILED, not CONFLICT.
+        """
+
+        result = ReconciliationService.reconcile(
+            self.execution,
+            [
+                self.evidence(
+                    source=ReconciliationService.Source.PROVIDER,
+                    status=ReconciliationService.Outcome.PENDING,
+                ),
+                self.evidence(
+                    source=ReconciliationService.Source.BANKING,
+                    status=ReconciliationService.Outcome.FAILED,
+                    reference="BANK-FAILED-PENDING-001",
+                ),
+            ],
+        )
+
+        self.assertEqual(
+            result.outcome,
+            ReconciliationService.Outcome.FAILED,
+        )
+
+        self.assertEqual(
+            result.reconciliation_state,
+            PaymentExecution.ReconciliationState.RECONCILED,
+        )
+
+        self.assertFalse(result.is_conflict)
+
+    def test_two_different_terminal_evidence_is_conflict(self):
+        """
+        Two different terminal statuses from independent
+        authoritative sources are a genuine conflict.
+        """
+
+        result = ReconciliationService.reconcile(
+            self.execution,
+            [
+                self.evidence(
+                    source=ReconciliationService.Source.PROVIDER,
+                    status=ReconciliationService.Outcome.COMPLETED,
+                ),
+                self.evidence(
+                    source=ReconciliationService.Source.BANKING,
+                    status=ReconciliationService.Outcome.FAILED,
+                    reference="BANK-FAILED-002",
+                ),
+            ],
+        )
+
+        self.assertEqual(
+            result.outcome,
             ReconciliationService.Outcome.CONFLICT,
         )
 
@@ -275,6 +348,10 @@ class ReconciliationServiceTests(TestCase):
             result.reconciliation_state,
             PaymentExecution.ReconciliationState.REQUIRED,
         )
+
+        self.assertTrue(result.is_conflict)
+        self.assertTrue(result.requires_reconciliation)
+        self.assertFalse(result.is_reconciled)
 
     def test_amount_mismatch_is_rejected(self):
         with self.assertRaises(ValidationError):
@@ -338,7 +415,7 @@ class ReconciliationServiceTests(TestCase):
                 self.execution,
                 [
                     self.evidence(
-                        status="processing",
+                        status="not_a_real_status",
                     )
                 ],
             )
@@ -423,7 +500,7 @@ class ReconciliationServiceTests(TestCase):
                 ReconciliationService.Outcome.COMPLETED,
             ],
         )
-        
+
     def test_completed_result_uses_execution_lifecycle(self):
         self.execution.status = PaymentExecution.Status.PROCESSING
         self.execution.save(

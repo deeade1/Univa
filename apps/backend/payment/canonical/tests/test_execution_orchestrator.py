@@ -22,7 +22,7 @@ from payment.canonical.services.providers import (
     ProviderRegistry,
     ProviderResult,
 )
-
+from unittest.mock import patch
 
 class FakeProviderAdapter(ProviderAdapter):
     """Test-only provider adapter."""
@@ -723,4 +723,40 @@ class ExecutionOrchestratorTests(TestCase):
             PaymentExecutionEvent.objects.filter(
                 execution=self.execution
             ).exists()
+        )
+       
+        
+    @patch(
+    "payment.canonical.services.execution_orchestrator."
+    "ReconciliationEnqueueAdapter.enqueue"
+    )
+    def test_pending_result_requires_reconciliation_and_enqueues_task(
+        self,
+        mock_enqueue,
+    ):
+        result = ProviderResult(
+            status=PaymentExecution.Status.PENDING,
+            provider_reference="FAKE-PENDING-003",
+            reconciliation_required=True,
+        )
+
+        self.register_adapter(result)
+
+        execution = ExecutionOrchestrator.execute(
+            self.execution
+        )
+
+        execution.refresh_from_db()
+
+        self.assertEqual(
+            execution.status,
+            PaymentExecution.Status.PENDING,
+        )
+        self.assertEqual(
+            execution.reconciliation_state,
+            PaymentExecution.ReconciliationState.REQUIRED,
+        )
+
+        mock_enqueue.assert_called_once_with(
+            execution=execution,
         )

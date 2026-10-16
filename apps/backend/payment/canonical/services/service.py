@@ -69,16 +69,26 @@ class PaymentService:
         cls,
         *,
         direction,
+        purpose,
         payer,
         beneficiary,
     ):
         errors = {}
 
         if direction == Payment.Direction.DISBURSE:
-            if beneficiary is None:
-                errors["beneficiary"] = (
-                    "Beneficiary is required for disbursement payments."
-                )
+            # Refunds route back through the original payment's
+            # instrument, not through an explicit beneficiary. The
+            # destination is carried in metadata (original_payment_id)
+            # and resolved by the provider adapter.
+            #
+            # Every other DISBURSE operation (vendor payout, driver
+            # payout, etc.) still requires a beneficiary.
+            if purpose != Payment.Purpose.REFUND:
+                if beneficiary is None:
+                    errors["beneficiary"] = (
+                        "Beneficiary is required for "
+                        "disbursement payments."
+                    )
 
         if errors:
             raise ValidationError(errors)
@@ -179,6 +189,7 @@ class PaymentService:
 
         cls._validate_direction_requirements(
             direction=direction,
+            purpose=purpose,
             payer=payer,
             beneficiary=beneficiary,
         )

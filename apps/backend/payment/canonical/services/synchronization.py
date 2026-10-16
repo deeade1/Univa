@@ -57,9 +57,21 @@ class PaymentExecutionSynchronization:
 
     @classmethod
     @transaction.atomic
-    def synchronize(cls, execution):
+    def synchronize(cls, execution) -> PaymentExecution:
         """
-        Synchronize Payment from the current PaymentExecution state.
+        Synchronize the parent Payment from the current
+        PaymentExecution state, and return the (refreshed)
+        PaymentExecution.
+
+        The PaymentExecution is the primary argument and is the
+        primary return value. Callers commonly do:
+
+            execution = PaymentExecutionSynchronization.synchronize(
+                execution
+            )
+
+        which is why the return value must be a PaymentExecution,
+        not the Payment.
 
         Rules:
 
@@ -104,48 +116,44 @@ class PaymentExecutionSynchronization:
         status = execution.status
 
         if status == PaymentExecution.Status.CREATED:
-            return payment
+            return execution
 
         if status == PaymentExecution.Status.PROCESSING:
             if payment.status == Payment.Status.PENDING:
-                return PaymentLifecycle.mark_processing(payment)
-
-            if payment.status == Payment.Status.PROCESSING:
-                return payment
-
-            raise ValidationError(
-                {
-                    "payment": (
-                        "Cannot synchronize a processing execution "
-                        f"to a {payment.status} payment."
-                    )
-                }
-            )
+                PaymentLifecycle.mark_processing(payment)
+            elif payment.status != Payment.Status.PROCESSING:
+                raise ValidationError(
+                    {
+                        "payment": (
+                            "Cannot synchronize a processing execution "
+                            f"to a {payment.status} payment."
+                        )
+                    }
+                )
+            return execution
 
         if status == PaymentExecution.Status.PENDING:
-            return payment
+            return execution
 
         if status == PaymentExecution.Status.COMPLETED:
             if payment.status == Payment.Status.PROCESSING:
-                return PaymentLifecycle.mark_completed(payment)
-
-            if payment.status == Payment.Status.COMPLETED:
-                return payment
-
-            raise ValidationError(
-                {
-                    "payment": (
-                        "Cannot synchronize a completed execution "
-                        f"to a {payment.status} payment."
-                    )
-                }
-            )
+                PaymentLifecycle.mark_completed(payment)
+            elif payment.status != Payment.Status.COMPLETED:
+                raise ValidationError(
+                    {
+                        "payment": (
+                            "Cannot synchronize a completed execution "
+                            f"to a {payment.status} payment."
+                        )
+                    }
+                )
+            return execution
 
         if status == PaymentExecution.Status.FAILED:
-            return payment
+            return execution
 
         if status == PaymentExecution.Status.CANCELLED:
-            return payment
+            return execution
 
         raise ValidationError(
             {

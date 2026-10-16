@@ -22,28 +22,32 @@ class PaymentExecutionService:
     @classmethod
     def _validate_payment(cls, payment):
         if payment is None:
-            raise ValidationError(
-                {"payment": "Payment is required."}
-            )
+            raise ValidationError({"payment": "Payment is required."})
 
         if not isinstance(payment, Payment):
             raise ValidationError(
                 {"payment": "A valid Payment instance is required."}
             )
 
-        if payment.status in {
-            Payment.Status.CANCELLED,
-            Payment.Status.REVERSED,
-        }:
-            raise ValidationError(
-                {
-                    "payment": (
-                        "Cannot create an execution for a "
-                        f"{payment.status} payment."
-                    )
-                }
-            )
+        # Only PENDING and FAILED payments can accept a new execution.
+        #
+        # - PENDING: first attempt, or retry from a non-terminal state
+        # - FAILED:  retry after a terminal failure
+        #
+        # COMPLETED, CANCELLED, REVERSED are terminal — no further attempts
+        # PROCESSING: an attempt is already in flight
+        allowed = {
+            Payment.Status.PENDING,
+            Payment.Status.FAILED,
+        }
 
+        if payment.status not in allowed:
+            raise ValidationError({
+                "payment": (
+                    f"Cannot create an execution for a "
+                    f"{payment.status} payment."
+                )
+            })    
     @classmethod
     def _validate_required(cls, **values):
         errors = {}
