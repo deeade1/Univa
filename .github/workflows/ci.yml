@@ -1,4 +1,5 @@
 name: Full Stack CI
+
 on: [push, pull_request]
 
 jobs:
@@ -12,7 +13,13 @@ jobs:
           POSTGRES_DB: test_db
           POSTGRES_USER: test_user
           POSTGRES_PASSWORD: test_pass
-        ports: ['5432:5432']
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
 
     steps:
       - uses: actions/checkout@v4
@@ -20,21 +27,35 @@ jobs:
       - name: Python Setup
         uses: actions/setup-python@v4
         with:
-          python-version: 3.11
+          python-version: '3.14'      # match local venv
 
       - name: Install backend deps
         run: |
           cd apps/backend
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest pytest-django factory-boy
+          pip install -r requirements-dev.txt
+
+      - name: Lint
+        run: |
+          cd apps/backend
+          ruff check .
+
+      - name: Check for un-generated migrations
+        env:
+          DATABASE_URL: postgres://test_user:test_pass@localhost:5432/test_db
+          DJANGO_TEST_DB_NAME: test_root
+        run: |
+          cd apps/backend
+          python manage.py makemigrations --check --dry-run
 
       - name: Run backend tests
         env:
           DATABASE_URL: postgres://test_user:test_pass@localhost:5432/test_db
+          DJANGO_TEST_DB_NAME: test_root
         run: |
           cd apps/backend
-          python manage.py migrate
-          pytest tests/ -v
+          pytest payment/ ecommerce/ -v
 
       - name: Node Setup
         uses: actions/setup-node@v4

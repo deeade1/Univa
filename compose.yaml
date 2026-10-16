@@ -46,7 +46,7 @@ services:
   kaz-nginx:
     build:
       context: .
-      dockerfile: apps/frontend/Dockerfile
+      dockerfile: apps/marketing/Dockerfile
     container_name: kaz-nginx
     ports:
       - "8080:80"
