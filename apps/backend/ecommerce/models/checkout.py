@@ -290,11 +290,11 @@ class Checkout(models.Model):
         max_length=255, blank=True, null=True
     )
     is_voucher_usage_increased = models.BooleanField(default=False)
-    gift_cards = models.ManyToManyField(
-        GiftCard,
-        blank=True,
-        related_name="checkouts",
-    )
+    # Gift cards are attached via `CheckoutGiftCard`, which carries
+    # the amount applied. See the model below.
+    #
+    # Access via `checkout.gift_card_applications.all()` or the
+    # helper `checkout.applied_gift_cards()`.
 
     # ------------------------------------------------------------------
     # Customer-facing metadata
@@ -378,17 +378,23 @@ class Checkout(models.Model):
     # ------------------------------------------------------------------
     # Gift cards
     # ------------------------------------------------------------------
-
+    
     def get_total_gift_cards_balance(self) -> Money:
-        """Total balance of the checkout's active gift cards."""
-        balance = self.gift_cards.active(date=date.today()).aggregate(
-            total=models.Sum("current_balance_amount"),
-        )["total"]
+        """
+        Total *available* balance of the gift cards applied to
+        this checkout.
+        """
+        balance = (
+            GiftCard.objects
+            .filter(checkout_applications__checkout=self)
+            .active(date=date.today())
+            .aggregate(total=models.Sum("current_balance_amount"))["total"]
+        )
 
         if balance is None:
             return zero_money(currency=self.currency)
         return Money(balance, self.currency)
-
+    
     # ------------------------------------------------------------------
     # Payment
     # ------------------------------------------------------------------
@@ -433,6 +439,15 @@ class Checkout(models.Model):
         if address and address.country:
             return address.country.code
         return self.country.code
+    
+        def applied_gift_cards(self):
+            """
+            Return the CheckoutGiftCard applications for this checkout.
+
+            Ordered by creation time, so the first card applied is
+            deducted first.
+            """
+            return self.gift_card_applications.select_related("gift_card")
 
 
 class CheckoutLine(ModelWithMetadata):
@@ -612,3 +627,78 @@ class CheckoutMetadata(ModelWithMetadata):
 
     def __str__(self):
         return f"CheckoutMetadata for {self.checkout_id}"
+    
+    
+class CheckoutGiftCard(models.Model):
+    """
+    A pending gift card application to a checkout.
+
+    Records the *intent* to use a gift card at checkout. The
+    gift card's balance is NOT deducted here — it is deducted at
+    `complete_checkout` so that an abandoned checkout does not
+    consume the balance.
+
+    Multiple gift cards can be applied to a single checkout.
+    """
+
+    id = models.UUIDField(
+        primary_key=True,
+        editable=False,
+        unique=True,
+        default=uuid4,
+    )
+
+    checkout = models.ForeignKey(
+        Checkout,
+        related_name="gift_card_applications",
+        on_delete=models.CASCADE,
+    )
+    gift_card = models.ForeignKey(
+        GiftCard,
+        related_name="checkout_applications",
+        on_delete=models.PROTECT,
+        help_text=(
+            "PROTECT: a gift card that has been applied to a "
+            "checkout cannot be deleted while the application "
+            "exists."
+        ),
+    )
+
+    amount_applied = models.DecimalField(
+        max_digits=settings.DEFAULT_MAX_DIGITS,
+        decimal_places=settings.DEFAULT_DECIMAL_PLACES,
+        validators=[MinValueValidator(Decimal("0.01"))],
+        help_text=(
+            "Amount to deduct from the gift card balance at "
+            "checkout completion. Recomputed on completion in "
+            "case the total changed."
+        ),
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("created_at", "pk")
+        constraints = [
+            models.UniqueConstraint(
+                fields=["checkout", "gift_card"],
+                name="unique_gift_card_per_checkout",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["checkout"],
+                name="chk_giftcard_checkout_idx",
+            ),
+            models.Index(
+                fields=["gift_card"],
+                name="chk_giftcard_card_idx",
+            ),
+        ]
+
+    def __str__(self):
+        return (
+            f"{self.gift_card.display_code} "
+            f"applied to {self.checkout_id}"
+        )

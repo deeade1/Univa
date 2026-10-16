@@ -47,14 +47,16 @@ from uuid import uuid4
 from django.conf import settings
 from django.contrib.postgres.indexes import BTreeIndex, GinIndex
 from django.contrib.postgres.search import SearchVectorField
+from django.core.exceptions import ValidationError
 from django.core.validators import (
     MaxValueValidator,
     MinValueValidator,
 )
 from django.db import models, transaction
-from django.db.models import JSONField, Q, TextField
+from django.db.models import F, JSONField, Q, TextField
 from django.urls import reverse
 from django.utils import timezone
+from django.utils.translation import gettext_lazy as _
 from django_measurement.models import MeasurementField
 from measurement.measures import Weight
 
@@ -86,7 +88,15 @@ from ecommerce.models.enums import (
 )
 from seo.models import SeoModel, SeoModelTranslationWithSlug
 from tax.models import TaxClass
+def _generate_digital_content_token() -> str:
+    """
+    Default factory for DigitalContentUrl.token.
 
+    Module-level rather than a lambda so Django's migration writer
+    can serialize it into AlterField operations. Uses uuid4().hex so
+    the value is a 32-character hex string with no dashes.
+    """
+    return uuid4().hex
 
 # =====================================================================
 # PRODUCT TYPE
@@ -301,6 +311,38 @@ class Product(SeoModel, ModelWithMetadata, ModelWithExternalReference):
     def __str__(self) -> str:
         return self.name
 
+    # ------------------------------------------------------------------
+    # Validation
+    # ------------------------------------------------------------------
+
+    def clean(self):
+        """
+        Validate cross-field invariants.
+
+        The `default_variant` must belong to this product. The
+        OneToOneField enforces uniqueness of the FK value, but not
+        that the referenced variant's `product_id` matches this
+        product's `pk`. Setting `default_variant` to a variant of a
+        different product would silently make `product.default_variant`
+        point at the wrong catalog entry.
+
+        `clean()` is called by `full_clean()` and by Django admin
+        forms. It is NOT called by `objects.create()` or `save()`, so
+        the same invariant must also be enforced at the service layer
+        when `default_variant` is assigned programmatically.
+        """
+        super().clean()
+
+        if self.default_variant_id and self.pk:
+            if self.default_variant.product_id != self.pk:
+                raise ValidationError(
+                    {
+                        "default_variant": _(
+                            "Default variant must belong to this product."
+                        )
+                    }
+                )
+
     def get_first_image(self):
         """
         Return the first image ProductMedia for this product, or None.
@@ -377,6 +419,46 @@ class ProductReview(models.Model):
 
     def __str__(self) -> str:
         return f"{self.product.name} - {self.rating}"
+
+    def mark_helpful(self) -> None:
+        """
+        Atomically increment `helpful_count`.
+
+        Uses a database-level F() expression rather than in-Python
+        increment-then-save, so concurrent calls do not lose updates.
+        The instance's local `helpful_count` is refreshed afterward
+        so callers see the committed value.
+        """
+        type(self).objects.filter(pk=self.pk).update(
+            helpful_count=F("helpful_count") + 1,
+        )
+        self.refresh_from_db(fields=["helpful_count"])
+
+    @classmethod
+    def record_helpful_vote(cls, review_id) -> int:
+        """
+        Atomically increment `helpful_count` for a review by id and
+        return the new count.
+
+        Preferred over instance `mark_helpful()` when the caller only
+        has a review id and does not need a `ProductReview` object
+        loaded.
+        """
+        updated = cls.objects.filter(pk=review_id).update(
+            helpful_count=F("helpful_count") + 1,
+        )
+
+        if not updated:
+            raise cls.DoesNotExist(
+                f"ProductReview {review_id} does not exist."
+            )
+
+        return (
+            cls.objects
+            .filter(pk=review_id)
+            .values_list("helpful_count", flat=True)
+            .get()
+        )
 
 
 # =====================================================================
@@ -515,6 +597,21 @@ class ProductChannelListing(PublishableModel):
                 fields=["product", "channel"],
                 name="unique_product_channel_listing",
             ),
+            # A discounted price cannot exceed the base price, when
+            # both are set. NULL on either side is allowed: the
+            # discounted price is optional, and the base price is
+            # always required but might not be comparable in a
+            # different currency (which is why currency is
+            # denormalized here).
+            models.CheckConstraint(
+                condition=(
+                    Q(discounted_price_amount__isnull=True)
+                    | Q(
+                        discounted_price_amount__lte=F("price_amount")
+                    )
+                ),
+                name="prod_listing_discounted_lte_price",
+            ),
         ]
         indexes = [
             models.Index(fields=["published_at"]),
@@ -595,7 +692,10 @@ class ProductVariant(
     track_inventory = models.BooleanField(default=True)
     is_preorder = models.BooleanField(default=False)
     preorder_end_date = models.DateTimeField(null=True, blank=True)
-    preorder_global_threshold = models.IntegerField(blank=True, null=True)
+    preorder_global_threshold = models.PositiveIntegerField(
+        blank=True,
+        null=True,
+    )
     quantity_limit_per_customer = models.IntegerField(
         blank=True,
         null=True,
@@ -644,7 +744,7 @@ class ProductVariant(
         price_override: Decimal | None = None,
         promotion_rules=None,
     ) -> Money:
-        from discount.utils.promotion import (
+        from ecommerce.services.promotion import (
             calculate_discounted_price_for_rules,
         )
 
@@ -842,6 +942,17 @@ class ProductVariantChannelListing(models.Model):
                 fields=["variant", "channel"],
                 name="unique_variant_channel_listing",
             ),
+            # A discounted price cannot exceed the base price, when
+            # both are set. NULL on either side is allowed.
+            models.CheckConstraint(
+                condition=(
+                    Q(discounted_price_amount__isnull=True)
+                    | Q(
+                        discounted_price_amount__lte=F("price_amount")
+                    )
+                ),
+                name="variant_listing_discounted_lte_price",
+            ),
         ]
         indexes = [
             BTreeIndex(
@@ -955,8 +1066,10 @@ class DigitalContentUrl(models.Model):
     """
     A time-limited download URL for a DigitalContent.
 
-    `token` is a 32-char hex string (UUID4 without dashes), stored as
-    a CharField. It is generated on first save.
+    `token` is a 32-char hex string (UUID4 without dashes), generated
+    on insert. `default=...` is used rather than a `save()` override
+    so that `bulk_create()` and any other path that bypasses `save()`
+    still produces a valid token.
     """
 
     content = models.ForeignKey(
@@ -977,10 +1090,11 @@ class DigitalContentUrl(models.Model):
         ),
     )
     token = models.CharField(
-        max_length=32,
-        unique=True,
-        editable=False,
-    )
+         max_length=32,
+         unique=True,
+         editable=False,
+         default=_generate_digital_content_token,
+     )
     is_revoked = models.BooleanField(
         default=False,
         db_index=True,
@@ -997,11 +1111,6 @@ class DigitalContentUrl(models.Model):
 
     def __str__(self) -> str:
         return f"Download {self.token[:8]}… for {self.content}"
-
-    def save(self, *args, **kwargs):
-        if not self.token:
-            self.token = uuid4().hex
-        super().save(*args, **kwargs)
 
     def get_absolute_url(self) -> str:
         url = reverse(

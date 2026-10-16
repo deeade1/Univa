@@ -36,8 +36,6 @@ from .constants import (
 )
 
 
-from ecommerce.services.shipping.postal_codes import filter_shipping_methods_by_postal_code_rules
-
 logger = logging.getLogger(__name__)
 
 
@@ -297,19 +295,27 @@ class ShippingZone(ModelWithMetadata):
 
     def __str__(self):
         return self.name
-
+    
     def clean(self):
-        """Validate shipping zone data."""
-        if self.default:
-            # Check if another default zone exists
-            existing_default = ShippingZone.objects.filter(
-                default=True, is_active=True
-            ).exclude(pk=self.pk)
-            if existing_default.exists():
-                raise ValidationError({
-                    "default": "Only one default shipping zone can exist."
-                })
+        """
+        Validate shipping zone data.
 
+        Note: uniqueness of the default zone is enforced by the
+        `pre_save` signal, which silently clears the previous
+        default when a new one is set. `clean()` does not check for
+        a conflicting default — doing so would make it impossible
+        to reassign the default through Django admin or DRF
+        serializers, which call `full_clean()` before save.
+
+        The invariant enforced here is weaker: a default zone must
+        also be active. A default zone that is inactive is
+        meaningless — the "default" pointer would resolve to a
+        zone the storefront cannot use.
+        """
+        if self.default and not self.is_active:
+            raise ValidationError({
+                "default": "The default shipping zone must be active."
+            })
     
 
     def get_shipping_methods_for_channel(self, channel_slug: str):
@@ -474,7 +480,7 @@ class ShippingMethod(ModelWithMetadata):
                 for listing in self.channel_listings.filter(is_active=True)
             }
         return self._channel_prices.get(channel_id)
-
+    
     def is_applicable(
         self,
         price: Money,
@@ -483,32 +489,45 @@ class ShippingMethod(ModelWithMetadata):
         country_code: str,
         product_ids: Optional[list[int]] = None,
     ) -> bool:
-        """Check if shipping method is applicable for given parameters."""
+        """
+        Check if shipping method is applicable for given parameters.
+
+        The method is not applicable if any of the following hold:
+
+            - its own status is not ACTIVE
+            - its own is_active flag is False
+            - its parent shipping zone is inactive
+
+        The last check is important: deactivating a zone should
+        disable every method inside it, regardless of the method's
+        own flags.
+        """
         if self.status != ShippingMethodStatus.ACTIVE or not self.is_active:
             return False
-        
+
+        if not self.shipping_zone.is_active:
+            return False
+
+        if product_ids and self.excluded_products.filter(id__in=product_ids).exists():
+            return False
+
         if self.type == ShippingMethodType.PRICE_BASED:
             listing = self.channel_listings.filter(
                 channel_id=channel_id,
-                currency=price.currency,
-                minimum_order_price_amount__lte=price.amount,
-                maximum_order_price_amount__gte=price.amount,
                 is_active=True,
             ).first()
-            return bool(listing)
-        
-        elif self.type == ShippingMethodType.WEIGHT_BASED:
-            weight_valid = (
-                (not self.minimum_order_weight or self.minimum_order_weight <= weight)
-                and (not self.maximum_order_weight or self.maximum_order_weight >= weight)
-            )
-            country_valid = country_code in self.shipping_zone.countries
-            product_valid = not (product_ids and self.excluded_products.filter(id__in=product_ids).exists())
-            return weight_valid and country_valid and product_valid
-        
+            return listing is not None and listing.is_applicable(price)
+
+        if self.type == ShippingMethodType.WEIGHT_BASED:
+            if self.minimum_order_weight and weight < self.minimum_order_weight:
+                return False
+            if self.maximum_order_weight and weight > self.maximum_order_weight:
+                return False
+            return True
+
         return False
 
-# shipping/models.py - Updated with UniqueConstraint
+    # shipping/models.py - Updated with UniqueConstraint
 
 # ============================================================================
 # SHIPPING METHOD POSTAL CODE RULE

@@ -302,3 +302,6 @@ class CategoryTranslation(SeoModelTranslationWithSlug):
             "name": self.name,
             "description": self.description,
         }
+        
+        
+        

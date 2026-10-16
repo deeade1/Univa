@@ -68,8 +68,8 @@ from ecommerce.models.discount import Voucher
 from ecommerce.models.giftcard import GiftCard
 from ecommerce.models.shipping import ShippingMethod
 from payment.constants import ChargeStatus, TransactionKind
-from payment.model_helpers import get_subtotal
-from payment.models import Payment
+
+
 
 from .constants import (
     DiscountValueType,
@@ -85,6 +85,10 @@ from .constants import (
 if TYPE_CHECKING:
     from accounts.models import User
 
+
+def get_subtotal(order_lines: Iterable["OrderLine"], fallback_currency: str):
+    subtotal_iterator = (line.total_price for line in order_lines)
+    return sum(subtotal_iterator, zero_taxed_money(currency=fallback_currency))
 
 # =====================================================================
 # ORDER QUERYSET
@@ -411,7 +415,18 @@ class Order(ModelWithMetadata, ModelWithExternalReference):
         blank=True,
         db_index=True,
     )
-
+    
+    payment_id = models.UUIDField(
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text=(
+            "Soft reference to payment_canonical.Payment.id. "
+            "Ecommerce depends on payment, not the reverse. "
+            "No FK constraint so payments can be relocated or "
+            "replayed without cross-app migrations."
+        ),
+    )
     # ------------------------------------------------------------------
     # Shipping prices
     # ------------------------------------------------------------------
@@ -826,6 +841,10 @@ class Order(ModelWithMetadata, ModelWithExternalReference):
                 fields=["status", "-created_at"],
                 name="order_status_created_idx",
             ),
+            models.Index(
+                fields=["payment_id"],
+                name="order_payment_id_idx",
+            ),
             # Operational
             BTreeIndex(
                 fields=["created_at", "status"],
@@ -1068,7 +1087,21 @@ class Order(ModelWithMetadata, ModelWithExternalReference):
             amount=(self.total_charged_amount - self.total_gross_amount),
             currency=self.currency,
         )
+    
+    def get_payment(self):
+        """
+        Return the canonical Payment attached to this order, if any.
 
+        Ecommerce imports Payment lazily so that if the payment app
+        is ever split out into a separate service, this method can
+        be replaced with an RPC call without touching call sites.
+        """
+        if not self.payment_id:
+            return None
+
+        from payment.canonical.models import Payment
+
+        return Payment.objects.filter(pk=self.payment_id).first()
 
 # =====================================================================
 # ORDER LINE
@@ -1755,7 +1788,7 @@ class OrderEvent(models.Model):
     type = models.CharField(
         max_length=255,
         choices=[
-            (type_name.upper(), type_name)
+            (type_name.upper(), type_name.replace("_", " ").title())
             for type_name, _ in OrderEvents.CHOICES
         ],
         db_index=True,
@@ -1834,6 +1867,17 @@ OrderGrantedRefundManager = models.Manager.from_queryset(
 
 
 class OrderGrantedRefund(models.Model):
+    payment_id = models.UUIDField(
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text=(
+            "Soft reference to payment_canonical.Payment.id for the "
+            "refund payment. Mirrors Order.payment_id — the payment "
+            "primitive stays canonical; the refund intent owns the "
+            "reference."
+        ),
+    )
     created_at = models.DateTimeField(
         default=now,
         editable=False,
@@ -1883,14 +1927,7 @@ class OrderGrantedRefund(models.Model):
 
     shipping_costs_included = models.BooleanField(default=False)
 
-    transaction_item = models.ForeignKey(
-        "payment.TransactionItem",
-        related_name="granted_refund",
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-    )
-
+   
     status = models.CharField(
         choices=OrderGrantedRefundStatus.CHOICES,
         default=OrderGrantedRefundStatus.NONE,
@@ -1903,6 +1940,10 @@ class OrderGrantedRefund(models.Model):
     class Meta:
         ordering = ("created_at", "id")
         indexes = [
+            models.Index(
+                fields=["payment_id"],
+                name="orderrefund_payment_id_idx",
+            ),
             BTreeIndex(fields=["order"], name="orderrefund_order_idx"),
             BTreeIndex(fields=["status"], name="orderrefund_status_idx"),
             BTreeIndex(

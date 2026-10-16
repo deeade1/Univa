@@ -884,8 +884,6 @@ class BaseDiscount(models.Model):
 
     class Meta:
         abstract = True
-
-
 class OrderDiscount(BaseDiscount):
     order = models.ForeignKey(
         "ecommerce.Order",
@@ -916,8 +914,18 @@ class OrderDiscount(BaseDiscount):
                 name="orderdiscount_translated_idx",
             ),
         ]
-
-
+        constraints = [
+            # At most one manual discount (promotion_rule IS NULL) per
+            # order. Promotion-based discounts are not restricted by
+            # this constraint — they carry their own promotion_rule_id
+            # and can coexist.
+            models.UniqueConstraint(
+                fields=["order_id"],
+                condition=models.Q(promotion_rule__isnull=True),
+                name="unique_order_single_manual_discount",
+            ),
+        ]
+        
 class OrderLineDiscount(BaseDiscount):
     line = models.ForeignKey(
         "ecommerce.OrderLine",
@@ -954,9 +962,16 @@ class OrderLineDiscount(BaseDiscount):
                 fields=["line_id", "unique_type"],
                 name="unique_orderline_discount_type",
             ),
+            # At most one manual discount (unique_type IS NULL) per
+            # line. See OrderDiscount for the rationale.
+            models.UniqueConstraint(
+                fields=["line_id"],
+                condition=models.Q(unique_type__isnull=True),
+                name="unique_orderline_single_manual_discount",
+            ),
         ]
-
-
+        
+        
 class CheckoutDiscount(BaseDiscount):
     checkout = models.ForeignKey(
         "ecommerce.Checkout",
@@ -992,6 +1007,13 @@ class CheckoutDiscount(BaseDiscount):
                 fields=["checkout_id", "promotion_rule_id"],
                 name="unique_checkout_promotion_rule",
             ),
+            # At most one manual discount (promotion_rule IS NULL)
+            # per checkout. See OrderDiscount for the rationale.
+            models.UniqueConstraint(
+                fields=["checkout_id"],
+                condition=models.Q(promotion_rule__isnull=True),
+                name="unique_checkout_single_manual_discount",
+            ),
         ]
 
     def __str__(self):
@@ -999,8 +1021,6 @@ class CheckoutDiscount(BaseDiscount):
             f"Discount ({self.value_type} - {self.value}) "
             f"on Checkout {self.checkout_id}"
         )
-
-
 class CheckoutLineDiscount(BaseDiscount):
     line = models.ForeignKey(
         "ecommerce.CheckoutLine",
@@ -1037,6 +1057,13 @@ class CheckoutLineDiscount(BaseDiscount):
                 fields=["line_id", "unique_type"],
                 name="unique_checkoutline_dis_type",
             ),
+            # At most one manual discount (unique_type IS NULL) per
+            # line. See OrderDiscount for the rationale.
+            models.UniqueConstraint(
+                fields=["line_id"],
+                condition=models.Q(unique_type__isnull=True),
+                name="unique_checkoutline_single_manual_discount",
+            ),
         ]
 
     def __str__(self):
@@ -1044,8 +1071,8 @@ class CheckoutLineDiscount(BaseDiscount):
             f"Discount ({self.value_type} - {self.value}) "
             f"on Checkout Line {self.line_id}"
         )
-
-
+        
+        
 # =====================================================================
 # PROMOTION EVENTS
 # =====================================================================

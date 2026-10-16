@@ -434,7 +434,7 @@ class ProductVariantQuerySet(models.QuerySet):
     """
     Queryset for ProductVariant.
     """
-
+    
     def annotate_quantities(self):
         """
         Annotate variants with inventory quantities.
@@ -443,10 +443,15 @@ class ProductVariantQuerySet(models.QuerySet):
             Total physical stock.
 
         quantity_allocated:
-            Total stock currently allocated/reserved.
+            Total stock currently allocated. Computed from
+            Allocation rows; there is no cached counter on Stock.
 
         available_quantity:
             Physical stock minus allocated stock.
+
+        All quantities are Decimal(12, 3) — market items can be sold
+        by continuous units (2.5 kg, 0.75 l) and the annotation must
+        not truncate to integers.
         """
 
         from warehouse.models import Allocation
@@ -471,7 +476,10 @@ class ProductVariantQuerySet(models.QuerySet):
         allocated_expression = Coalesce(
             Subquery(
                 allocations_subquery,
-                output_field=models.IntegerField(),
+                output_field=models.DecimalField(
+                    max_digits=12,
+                    decimal_places=3,
+                ),
             ),
             Value(0),
         )
@@ -489,11 +497,14 @@ class ProductVariantQuerySet(models.QuerySet):
             .annotate(
                 available_quantity=ExpressionWrapper(
                     F("quantity") - F("quantity_allocated"),
-                    output_field=models.IntegerField(),
+                    output_field=models.DecimalField(
+                        max_digits=12,
+                        decimal_places=3,
+                    ),
                 )
             )
         )
-
+    
     def available_in_channel(
         self,
         channel: Optional[Channel],

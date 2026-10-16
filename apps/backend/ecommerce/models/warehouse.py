@@ -8,9 +8,10 @@ ARCHITECTURE
 This module owns warehouse, channel warehouse association, and basic warehouse operations.
 """
 
-import uuid
 import itertools
+import uuid
 from decimal import Decimal
+
 from django.conf import settings
 from django.contrib.postgres.indexes import BTreeIndex
 from django.db import models
@@ -47,10 +48,23 @@ class WarehouseQueryset(models.QuerySet["Warehouse"]):
         country: str,
         channel_id: int,
     ) -> QuerySet["Warehouse"]:
+        """
+        Return warehouses that serve the given country on the given
+        channel.
+
+        A warehouse serves a channel through `ChannelWarehouse`, and
+        serves a country through any of its `ShippingZone`s whose
+        `countries` include the code and which is attached to the
+        same channel.
+
+        Note: `ShippingZone.channels` is a M2M. The reverse filter is
+        `shipping_zones__channels__id`, not `shipping_zones__channel__id`.
+        """
+
         return (
             self.filter(
                 shipping_zones__countries__contains=country,
-                shipping_zones__channel__id=channel_id,
+                shipping_zones__channels__id=channel_id,
                 channelwarehouse__channel_id=channel_id,
             )
             .distinct()
@@ -65,29 +79,40 @@ class WarehouseQueryset(models.QuerySet["Warehouse"]):
             ]
         )
 
-    def applicable_for_click_and_collect(
+    def click_and_collect_warehouses_for_channel(
         self,
-        lines_qs: QuerySet,
         channel_id: int,
     ) -> QuerySet["Warehouse"]:
-        """Return warehouses capable of fulfilling the supplied lines through click-and-collect."""
-        return self._for_channel_click_and_collect(channel_id)
+        """
+        Return warehouses on the given channel that are configured for
+        click-and-collect.
 
-    def _for_channel_click_and_collect(
-        self,
-        channel_id: int,
-    ) -> QuerySet["Warehouse"]:
+        This method only filters by the warehouse's
+        `click_and_collect_option`. It does NOT verify that any
+        particular line can actually be fulfilled from the returned
+        warehouses — stock availability is a property of the Stock
+        model, not of the Warehouse. Callers that need "warehouses
+        that can serve these lines" should intersect this queryset
+        with `Stock.objects.for_channel_and_country(...)` filtered by
+        variant.
+
+        The previous name (`applicable_for_click_and_collect`)
+        and its `lines_qs` argument implied that this method
+        filtered by line-level availability. It never did, and
+        the argument was silently ignored. The rename and
+        signature change make the actual contract explicit.
+        """
+
         return self.for_channel(channel_id).filter(
             self._get_click_and_collect_filter(),
         )
-
 
 WarehouseManager = models.Manager.from_queryset(WarehouseQueryset)
 
 
 class ChannelWarehouse(SortableModel):
     """Through model for Channel -> Warehouse relationship."""
-    
+
     channel = models.ForeignKey(
         Channel,
         related_name="channelwarehouse",
@@ -226,6 +251,7 @@ class Warehouse(
     class Meta(ModelWithMetadata.Meta):
         ordering = ("-slug",)
         indexes = [
+            *ModelWithMetadata.Meta.indexes,
             BTreeIndex(
                 fields=["slug"],
                 name="warehouse_slug_idx",
@@ -277,13 +303,3 @@ class Warehouse(
             / Decimal(self.capacity_total)
             * Decimal("100")
         ).quantize(Decimal("0.01"))
-
-    def delete(self, *args, **kwargs) -> None:
-        address = self.address
-
-        super().delete(*args, **kwargs)
-
-        if not Warehouse.objects.filter(
-            address=address,
-        ).exists():
-            address.delete()

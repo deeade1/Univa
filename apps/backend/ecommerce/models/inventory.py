@@ -16,11 +16,11 @@ Quantity fields are Decimal(12,3) so that weighted market items
 (2.5 kg of beef) are tracked correctly alongside discrete catalog
 items.
 
-Six aspirational satellite models (ReturnsManagement, InventoryPrediction,
-InventoryHealthMetrics, InterWarehouseTransfer, WarehousePerformance,
-WarehouseTask) were removed — none had consumers and each had a
-placeholder JSON field instead of proper line items. They will be
-rebuilt with real requirements.
+Availability is computed from `Allocation` and `Reservation` rows.
+There is no denormalized allocation counter on `Stock` — a previous
+version of this module had a `Stock.quantity_allocated` field, but
+it was never read for any decision, only maintained as a mirror of
+the `Allocation` aggregate. It was removed.
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ from typing import Optional
 
 from django.conf import settings
 from django.contrib.postgres.indexes import BTreeIndex, GinIndex
+from django.core.exceptions import ValidationError
 from django.db import models, transaction
 from django.db.models import F, Q, QuerySet, Sum
 from django.db.models.functions import Coalesce
@@ -45,7 +46,7 @@ from ecommerce.models.product import (
 )
 from ecommerce.models.warehouse import Warehouse
 
-
+from .constants import WarehouseClickAndCollectOption
 # =====================================================================
 # CONSTANTS
 # =====================================================================
@@ -62,7 +63,13 @@ QUANTITY_MAX_DIGITS = 12
 
 class StockQuerySet(models.QuerySet["Stock"]):
     def annotate_available_quantity(self) -> QuerySet["Stock"]:
-        """Annotate with available (unallocated) quantity."""
+        """
+        Annotate with available (unallocated) quantity.
+
+        Availability is computed from `Allocation` rows, not from a
+        stored counter. Every read path in the codebase uses this
+        same source of truth.
+        """
         return self.annotate(
             available_quantity=(
                 F("quantity")
@@ -113,6 +120,26 @@ class StockQuerySet(models.QuerySet["Stock"]):
         country_code: Optional[str] = None,
         include_cc_warehouses: bool = False,
     ) -> QuerySet["Stock"]:
+        """
+        Return stock rows for a variant in a channel, optionally
+        filtered by country.
+
+        `include_cc_warehouses` controls whether click-and-collect
+        warehouses are included:
+
+            include_cc_warehouses=False (default)
+                Only standard (non-CC) warehouses are returned, and
+                only when a country is specified. When country is
+                None, ALL warehouses on the channel are returned.
+
+            include_cc_warehouses=True
+                Only click-and-collect warehouses are returned,
+                regardless of country.
+
+        The previous implementation had inverted logic: passing no
+        country filtered to click-and-collect warehouses, which was
+        the opposite of what callers expected.
+        """
         qs = (
             self.select_related(
                 "product_variant",
@@ -129,8 +156,7 @@ class StockQuerySet(models.QuerySet["Stock"]):
                 warehouse__shipping_zones__channels__slug=channel_slug,
             )
 
-        if include_cc_warehouses or not country_code:
-            from .constants import WarehouseClickAndCollectOption
+        if include_cc_warehouses:
             qs = qs.filter(
                 Q(
                     warehouse__click_and_collect_option__in=[
@@ -138,6 +164,16 @@ class StockQuerySet(models.QuerySet["Stock"]):
                         WarehouseClickAndCollectOption.ALL_WAREHOUSES,
                     ]
                 )
+            )
+        elif country_code:
+            # When a country is specified and CC is not requested,
+            # exclude click-and-collect warehouses. A CC warehouse
+            # is a pickup point, not a delivery origin.
+            qs = qs.exclude(
+                warehouse__click_and_collect_option__in=[
+                    WarehouseClickAndCollectOption.LOCAL_STOCK,
+                    WarehouseClickAndCollectOption.ALL_WAREHOUSES,
+                ]
             )
 
         return qs.distinct()
@@ -186,7 +222,13 @@ StockManager = models.Manager.from_queryset(StockQuerySet)
 
 
 class Stock(models.Model):
-    """Physical inventory of a variant at a warehouse."""
+    """
+    Physical inventory of a variant at a warehouse.
+
+    Availability is derived from `Allocation` rows. There is no
+    stored allocation counter on this model; the previous
+    `quantity_allocated` field was write-only and has been removed.
+    """
 
     warehouse = models.ForeignKey(
         Warehouse,
@@ -210,13 +252,6 @@ class Stock(models.Model):
             "On-hand quantity. Decimal so that market items "
             "measured in kg, g, l, etc. can be tracked."
         ),
-    )
-
-    quantity_allocated = models.DecimalField(
-        max_digits=QUANTITY_MAX_DIGITS,
-        decimal_places=QUANTITY_DECIMAL_PLACES,
-        default=Decimal("0"),
-        help_text="Quantity currently allocated to open orders.",
     )
 
     low_stock_threshold = models.DecimalField(
@@ -246,10 +281,6 @@ class Stock(models.Model):
                 name="stock_quantity_idx",
             ),
             BTreeIndex(
-                fields=["quantity_allocated"],
-                name="stock_allocated_idx",
-            ),
-            BTreeIndex(
                 fields=[
                     "warehouse",
                     "product_variant",
@@ -271,10 +302,6 @@ class Stock(models.Model):
                 condition=Q(quantity__gte=0),
                 name="stock_quantity_non_negative",
             ),
-            models.CheckConstraint(
-                condition=Q(quantity_allocated__gte=0),
-                name="stock_allocated_non_negative",
-            ),
         ]
 
     def __str__(self) -> str:
@@ -292,31 +319,52 @@ class Stock(models.Model):
         reason: str = "",
         user=None,
     ) -> None:
-        """Increase stock and record a StockHistory entry."""
+        """
+        Increase stock and record a StockHistory entry.
+
+        Locks the stock row before mutating so concurrent increases
+        cannot lose updates. Raises ValidationError for non-positive
+        quantities.
+        """
         quantity = Decimal(str(quantity))
         if quantity <= 0:
-            raise ValueError(
-                "Stock increase quantity must be greater than zero."
+            raise ValidationError(
+                {
+                    "quantity": (
+                        "Stock increase quantity must be greater than zero."
+                    )
+                }
             )
 
-        previous_quantity = self.quantity
+        # Re-read under lock so the increment applies to the current
+        # committed value.
+        locked = (
+            type(self)
+            .objects
+            .select_for_update()
+            .get(pk=self.pk)
+        )
+        previous_quantity = locked.quantity
 
         if commit:
-            self.quantity = F("quantity") + quantity
-            self.save(update_fields=["quantity"])
-            self.refresh_from_db(fields=["quantity"])
+            locked.quantity = F("quantity") + quantity
+            locked.save(update_fields=["quantity"])
+            locked.refresh_from_db(fields=["quantity"])
 
             StockHistory.objects.create(
-                stock=self,
-                product_variant=self.product_variant,
-                warehouse=self.warehouse,
+                stock=locked,
+                product_variant=locked.product_variant,
+                warehouse=locked.warehouse,
                 quantity_change=quantity,
                 previous_quantity=previous_quantity,
-                new_quantity=self.quantity,
+                new_quantity=locked.quantity,
                 change_type=StockHistory.ChangeType.RESTOCK,
                 reason=reason or "Restock",
                 user=user,
             )
+
+            # Keep the caller's instance in sync.
+            self.quantity = locked.quantity
         else:
             self.quantity = previous_quantity + quantity
 
@@ -328,37 +376,66 @@ class Stock(models.Model):
         reason: str = "",
         user=None,
     ) -> None:
-        """Decrease stock and record a StockHistory entry."""
+        """
+        Decrease stock and record a StockHistory entry.
+
+        Locks the stock row and re-reads availability inside the
+        lock, so concurrent decreases cannot oversell. Raises
+        ValidationError if the requested quantity exceeds what is
+        available.
+        """
         quantity = Decimal(str(quantity))
         if quantity <= 0:
-            raise ValueError(
-                "Stock decrease quantity must be greater than zero."
+            raise ValidationError(
+                {
+                    "quantity": (
+                        "Stock decrease quantity must be greater than zero."
+                    )
+                }
             )
 
-        if quantity > self.available_quantity:
-            raise ValueError(
-                f"Cannot decrease stock by {quantity}; "
-                f"only {self.available_quantity} available."
+        # Lock the row, then read availability against the locked
+        # state. `available_quantity` reads from `Allocation` rows,
+        # which are also locked by the deallocation path — so this
+        # is a stable snapshot within the transaction.
+        locked = (
+            type(self)
+            .objects
+            .select_for_update()
+            .get(pk=self.pk)
+        )
+
+        available = locked.available_quantity
+        if quantity > available:
+            raise ValidationError(
+                {
+                    "quantity": (
+                        f"Cannot decrease stock by {quantity}; "
+                        f"only {available} available."
+                    )
+                }
             )
 
-        previous_quantity = self.quantity
+        previous_quantity = locked.quantity
 
         if commit:
-            self.quantity = F("quantity") - quantity
-            self.save(update_fields=["quantity"])
-            self.refresh_from_db(fields=["quantity"])
+            locked.quantity = F("quantity") - quantity
+            locked.save(update_fields=["quantity"])
+            locked.refresh_from_db(fields=["quantity"])
 
             StockHistory.objects.create(
-                stock=self,
-                product_variant=self.product_variant,
-                warehouse=self.warehouse,
+                stock=locked,
+                product_variant=locked.product_variant,
+                warehouse=locked.warehouse,
                 quantity_change=-quantity,
                 previous_quantity=previous_quantity,
-                new_quantity=self.quantity,
+                new_quantity=locked.quantity,
                 change_type=StockHistory.ChangeType.REMOVAL,
                 reason=reason or "Removal",
                 user=user,
             )
+
+            self.quantity = locked.quantity
         else:
             self.quantity = previous_quantity - quantity
 
@@ -368,7 +445,12 @@ class Stock(models.Model):
 
     @property
     def available_quantity(self) -> Decimal:
-        """Physical stock minus allocations, floored at zero."""
+        """
+        Physical stock minus allocations, floored at zero.
+
+        Aggregates from `Allocation` rows. This is the single source
+        of truth for availability.
+        """
         allocated = (
             self.allocations.aggregate(
                 total=Coalesce(
@@ -583,13 +665,30 @@ class StockHistory(models.Model):
         user=None,
         **kwargs,
     ) -> "StockHistory":
-        """Create a StockHistory from an already-applied stock change."""
+        """
+        Create a StockHistory from an already-applied stock change.
+
+        The `stock.quantity` value must already reflect the change.
+        `previous_quantity` is computed by reversing the change. If
+        the reversal produces a negative value, that means the caller
+        passed a change that is larger than the resulting stock — a
+        data integrity error — and this method raises rather than
+        silently clamping to zero.
+        """
         quantity_change = Decimal(str(quantity_change))
         new_quantity = stock.quantity
-        previous_quantity = max(
-            new_quantity - quantity_change,
-            Decimal("0"),
-        )
+        previous_quantity = new_quantity - quantity_change
+
+        if previous_quantity < 0:
+            raise ValidationError(
+                {
+                    "quantity_change": (
+                        "The change implies a negative prior quantity "
+                        f"({previous_quantity}); the stock row and the "
+                        "change are inconsistent."
+                    )
+                }
+            )
 
         return cls.objects.create(
             stock=stock,
@@ -705,20 +804,27 @@ class Allocation(models.Model):
 # =====================================================================
 
 
-class ReservationQuerySet(models.QuerySet["Reservation"]):
-    def not_expired(self) -> QuerySet["Reservation"]:
+class ReservedLineQuerySet(models.QuerySet):
+    """
+    Shared queryset for Reservation and PreorderReservation.
+
+    Both models have a `checkout_line` FK and a `reserved_until`
+    DateTimeField, so the shared queryset is safe.
+    """
+
+    def not_expired(self) -> QuerySet:
         return self.filter(reserved_until__gt=timezone.now())
 
     def exclude_checkout_lines(
         self,
         checkout_lines: Optional[Iterable[CheckoutLine]],
-    ) -> QuerySet["Reservation"]:
+    ) -> QuerySet:
         if not checkout_lines:
             return self
         return self.exclude(checkout_line__in=checkout_lines)
 
 
-ReservationManager = models.Manager.from_queryset(ReservationQuerySet)
+ReservedLineManager = models.Manager.from_queryset(ReservedLineQuerySet)
 
 
 class Reservation(models.Model):
@@ -746,7 +852,7 @@ class Reservation(models.Model):
 
     reserved_until = models.DateTimeField(db_index=True)
 
-    objects = ReservationManager()
+    objects = ReservedLineManager()
 
     class Meta:
         ordering = ("pk",)
@@ -849,7 +955,7 @@ class PreorderReservation(models.Model):
 
     reserved_until = models.DateTimeField(db_index=True)
 
-    objects = ReservationManager()
+    objects = ReservedLineManager()
 
     class Meta:
         ordering = ("pk",)

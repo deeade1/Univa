@@ -6,7 +6,7 @@ from django.urls import reverse
 from django.utils.html import format_html, mark_safe
 from django.utils.safestring import mark_safe
 from django.utils.translation import gettext_lazy as _
-from prices import Money
+from core.pricing import Money
 
 from django_prices.templatetags import prices_i18n
 

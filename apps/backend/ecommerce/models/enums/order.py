@@ -103,7 +103,8 @@ class OrderEvents:
     ORDER_LINE_DISCOUNT_UPDATED = "order_line_discount_updated"
     ORDER_LINE_DISCOUNT_REMOVED = "order_line_discount_removed"
     ORDER_LINE_PRODUCT_DELETED = "order_line_product_deleted"
-    ORDER_LINE_VARIANT_DELETED = "order_line_variant_deleted"
+    ORDER_LINE_VARIANT_DELETED = "order_line_variant_deleted"   
+    ORDER_REFUND_REQUESTED = "order_refund_requested"
     UPDATED_ADDRESS = "updated_address"
     EMAIL_SENT = "email_sent"
     PAYMENT_AUTHORIZED = "payment_authorized"
@@ -157,6 +158,7 @@ class OrderEvents:
         (ORDER_LINE_DISCOUNT_REMOVED, "The discount for order line was removed."),
         (ORDER_LINE_PRODUCT_DELETED, "The order line product was removed."),
         (ORDER_LINE_VARIANT_DELETED, "The order line product variant was removed."),
+        (ORDER_REFUND_REQUESTED, "Refund requested for this order."),
         (UPDATED_ADDRESS, "The address from the placed order was updated"),
         (EMAIL_SENT, "The email was sent"),
         (CONFIRMED, "Order was confirmed"),

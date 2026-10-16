@@ -42,6 +42,15 @@ A single `AssignedAttribute` model handles both products and variants.
 A CheckConstraint enforces that exactly one of `product` / `variant`
 is set.
 
+A second CheckConstraint enforces that exactly one of
+`attribute_value` / `raw_value` is set.
+
+A model-level `clean()` and a classmethod `assign()` enforce that a
+preset `attribute_value` actually belongs to the assigned `attribute`.
+The database cannot enforce this cross-row invariant without a
+trigger, so the model and the classmethod are the authoritative
+checks.
+
 Translation
 -----------
 
@@ -51,6 +60,7 @@ Attribute and AttributeValue both support translations via
 
 from __future__ import annotations
 
+from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils.translation import gettext_lazy as _
 
@@ -510,8 +520,23 @@ class AssignedAttribute(ModelWithMetadata):
         Used for TEXT, NUMBER, BOOLEAN, DATE, DATETIME, FILE, JSON.
 
     Which one is required depends on the parent attribute's data_type.
-    The database enforces the exactly-one constraint; the service
-    layer enforces the data_type match.
+    The database enforces the exactly-one constraint; the model
+    enforces that a preset `attribute_value` belongs to `attribute`.
+
+    Construction
+    ------------
+
+    Prefer the classmethod:
+
+        AssignedAttribute.assign(
+            product=iphone,
+            attribute=color_attribute,
+            attribute_value=red_value,
+        )
+
+    over `AssignedAttribute.objects.create(...)`. `objects.create()`
+    bypasses `clean()`, so the attribute/value ownership check would
+    not run. The classmethod runs the check explicitly.
     """
 
     attribute = models.ForeignKey(
@@ -606,3 +631,98 @@ class AssignedAttribute(ModelWithMetadata):
     def target(self):
         """The product or variant this attribute is attached to."""
         return self.product or self.variant
+
+    # ------------------------------------------------------------------
+    # Validation
+    # ------------------------------------------------------------------
+
+    def clean(self):
+        """
+        Validate cross-field invariants that the database cannot
+        express.
+
+        The CheckConstraints on this model enforce:
+
+          - exactly one of `product` / `variant` is set
+          - exactly one of `attribute_value` / `raw_value` is set
+
+        They do not enforce that a preset `attribute_value` actually
+        belongs to `self.attribute`. Cross-row ownership cannot be
+        expressed as a PostgreSQL check constraint without a trigger,
+        so this method is the authoritative check.
+
+        `clean()` is called by `full_clean()` and by Django admin
+        forms. It is NOT called by `objects.create()` or `save()`.
+        Use `AssignedAttribute.assign(...)` for the create path.
+        """
+        super().clean()
+
+        errors = {}
+
+        if (
+            self.attribute_value_id is not None
+            and self.attribute_id is not None
+            and self.attribute_value.attribute_id != self.attribute_id
+        ):
+            errors["attribute_value"] = _(
+                "Attribute value does not belong to the assigned "
+                "attribute."
+            )
+
+        if errors:
+            raise ValidationError(errors)
+
+    # ------------------------------------------------------------------
+    # Construction helper
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def assign(
+        cls,
+        *,
+        attribute,
+        product=None,
+        variant=None,
+        attribute_value=None,
+        raw_value=None,
+        sort_order=0,
+        **extra,
+    ) -> "AssignedAttribute":
+        """
+        Create an AssignedAttribute, enforcing the same invariants
+        that `clean()` enforces.
+
+        This is the preferred construction path, because
+        `objects.create()` bypasses `clean()`.
+
+        The exactly-one-of constraints are left to the database; this
+        method only adds the attribute/value ownership check on top
+        of `objects.create()`. The caller is still expected to pass
+        either `product` or `variant`, and either `attribute_value`
+        or `raw_value`.
+
+        Returns the persisted instance.
+        """
+
+        if (
+            attribute_value is not None
+            and attribute_value.attribute_id != attribute.pk
+        ):
+            raise ValidationError(
+                {
+                    "attribute_value": _(
+                        "Attribute value does not belong to the "
+                        "assigned attribute."
+                    )
+                }
+            )
+
+        return cls.objects.create(
+            attribute=attribute,
+            product=product,
+            variant=variant,
+            attribute_value=attribute_value,
+            raw_value=raw_value,
+            sort_order=sort_order,
+            **extra,
+        )
