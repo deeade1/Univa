@@ -1,231 +1,329 @@
-# apps/backend/ecommerce/services/checkout/calculations.py
-"""Checkout calculations - combines all calculations for preview and final modes."""
+# ecommerce/services/checkout/calculations.py
 
-''''from decimal import Decimal
-from typing import Optional, List, Dict, Any
-import logging
+"""
+Checkout calculations.
 
-from django.conf import settings
-from core.pricing.money import Money
-from core.pricing.money_field import TaxedMoney
+Computes the totals of a checkout:
 
-from .base_calculations import (
-    CheckoutPreview, CheckoutFinal,
-    calculate_subtotal_preview, calculate_subtotal_final,
-    calculate_shipping_preview, calculate_shipping_final,
-    calculate_discount_preview, calculate_discount_final,
-    calculate_tax_preview, calculate_tax_final,
-    get_default_currency, validate_currency,
-)
+    subtotal        — sum of line totals (taxed)
+    shipping_price  — price of the selected shipping method (taxed)
+    total           — subtotal + shipping_price
+
+Calculation is deterministic given:
+    - the checkout's lines
+    - the checkout's channel
+    - the checkout's shipping address country
+    - the checkout's shipping method
+
+Callers use:
+
+    calculate_checkout_subtotal(checkout, country_code)
+    calculate_checkout_shipping(checkout, country_code)
+    calculate_checkout_total(checkout, country_code)
+    update_checkout_totals(checkout, country_code)
+
+`update_checkout_totals` persists the totals on the Checkout row.
+"""
 
 
-logger = logging.getLogger(__name__)
+from __future__ import annotations
+
+from decimal import Decimal
+
+from django.db import transaction
+from django.db.models import Sum
+from django.utils import timezone
+
+from core.pricing import Money, TaxedMoney
+from ecommerce.models.channel import Channel
+from ecommerce.models.checkout import Checkout, CheckoutLine
+from ecommerce.models.shipping import ShippingMethodChannelListing
+from ecommerce.services.product.pricing import get_variant_availability
 
 
-class CheckoutCalculator:
+ZERO = Decimal("0")
+
+# =====================================================================
+# SUBTOTAL
+# =====================================================================
+
+
+def calculate_checkout_subtotal(
+    checkout: Checkout,
+    country_code: str,
+) -> TaxedMoney:
     """
-    Centralized checkout calculator with both preview and final modes.
-    
-    Preview mode: Fast, lightweight calculations for frontend display.
-    Final mode: Authoritative, secure calculations from database.
+    Return the taxed subtotal of a checkout.
+
+    The subtotal is the sum of every line's effective price multiplied
+    by its quantity, with tax applied based on `country_code`.
+
+    Lines whose variant is no longer available in the channel are
+    skipped. Callers should validate availability separately.
     """
-    
-    def __init__(self, request=None, user=None, session=None):
-        self.request = request
-        self.user = user
-        self.session = session
-        self.currency = get_default_currency()
-    
-    def get_preview(
-        self,
-        items: List[Dict[str, Any]],
-        promo_code: Optional[str] = None,
-        shipping_method: Optional[str] = None,
-        country_code: Optional[str] = None,
-    ) -> CheckoutPreview:
-        """
-        PREVIEW MODE - For frontend display only.
-        Fast, lightweight calculations.
-        
-        Args:
-            items: List of cart items with price, quantity
-            promo_code: Optional promotion code
-            shipping_method: Optional shipping method
-            country_code: Optional country code
-            
-        Returns:
-            CheckoutPreview: Preview calculation result
-        """
-        # Quick calculations from provided data
-        subtotal = calculate_subtotal_preview(items, self.currency)
-        shipping = calculate_shipping_preview(shipping_method, items, country_code or 'US')
-        discount = calculate_discount_preview(promo_code, subtotal)
-        tax = calculate_tax_preview(subtotal, country_code or 'US', items)
-        total = subtotal + shipping - discount + tax
-        
-        return CheckoutPreview(
-            subtotal=subtotal,
-            shipping_estimate=shipping,
-            discount_estimate=discount,
-            tax_estimate=tax,
-            total_estimate=total,
-            currency=self.currency,
-            is_estimated=True
+    subtotal = _zero_taxed_money(checkout.currency)
+
+    for line in checkout.lines.select_related(
+        "variant__product__product_type"
+    ):
+        line_total = _calculate_line_total(line, checkout, country_code)
+        if line_total is not None:
+            subtotal = subtotal + line_total
+
+    return subtotal
+
+
+def calculate_checkout_subtotal_undiscounted(
+    checkout: Checkout,
+    country_code: str,
+) -> TaxedMoney:
+    """
+    Same as `calculate_checkout_subtotal` but using the undiscounted
+    (base) price of each variant.
+    """
+    subtotal = _zero_taxed_money(checkout.currency)
+
+    for line in checkout.lines.select_related(
+        "variant__product__product_type"
+    ):
+        line_total = _calculate_line_total(
+            line, checkout, country_code, use_base_price=True
         )
-    
-    def get_final(
-        self,
-        checkout_id: Optional[str] = None,
-        items: Optional[List[Any]] = None,
-        promo_code: Optional[str] = None,
-        shipping_method: Optional[Any] = None,
-        address: Optional[Any] = None,
-        gift_cards: Optional[List[Any]] = None,
-    ) -> CheckoutFinal:
-        """
-        FINAL MODE - For order creation.
-        Authoritative, secure calculations from database.
-        
-        Args:
-            checkout_id: Checkout ID to load from database
-            items: List of database checkout line objects
-            promo_code: Promotion code (will be validated)
-            shipping_method: Shipping method database object
-            address: Shipping address
-            gift_cards: List of gift card objects
-            
-        Returns:
-            CheckoutFinal: Final calculation result with order ID
-        """
-        # If checkout_id provided, load from database
-        if checkout_id and not items:
-            items = self._load_checkout_items(checkout_id)
-        
-        if not items:
-            raise ValueError("No items provided or found")
-        
-        # RECALCULATE EVERYTHING FROM DATABASE
-        subtotal = calculate_subtotal_final(items, self.currency)
-        
-        shipping = calculate_shipping_final(
-            shipping_method, address, self.currency
+        if line_total is not None:
+            subtotal = subtotal + line_total
+
+    return subtotal
+
+
+def _calculate_line_total(
+    line: CheckoutLine,
+    checkout: Checkout,
+    country_code: str,
+    *,
+    use_base_price: bool = False,
+) -> TaxedMoney | None:
+    """
+    Compute the taxed total for a single line.
+
+    Returns None if the variant is not available in the channel.
+    """
+    variant = line.variant
+
+    availability = get_variant_availability(
+        variant, checkout.channel, country_code
+    )
+    if availability is None:
+        return None
+
+    if use_base_price:
+        unit_price = availability.price_undiscounted
+    else:
+        unit_price = availability.price
+
+    # Price override takes precedence — used for ad-hoc lines.
+    if line.price_override is not None:
+        override_money = Money(line.price_override, checkout.currency)
+        unit_price = TaxedMoney(net=override_money, gross=override_money)
+
+    quantity = line.quantity
+
+    return TaxedMoney(
+        net=unit_price.net * quantity,
+        gross=unit_price.gross * quantity,
+    )
+
+
+# =====================================================================
+# SHIPPING
+# =====================================================================
+
+
+def calculate_checkout_shipping(
+    checkout: Checkout,
+    country_code: str,
+) -> TaxedMoney:
+    """
+    Return the taxed shipping price of a checkout.
+
+    Returns zero if:
+        - no shipping method is set
+        - the shipping method has no channel listing
+        - no line requires shipping
+
+    The shipping price is taken from the shipping method's channel
+    listing in the checkout's currency.
+    """
+    if not _checkout_requires_shipping(checkout):
+        return _zero_taxed_money(checkout.currency)
+
+    if checkout.shipping_method_id is None:
+        return _zero_taxed_money(checkout.currency)
+
+    listing = _get_shipping_listing(checkout)
+    if listing is None:
+        return _zero_taxed_money(checkout.currency)
+
+    price = Money(listing.price_amount, listing.currency)
+    return TaxedMoney(net=price, gross=price)
+
+
+def _get_shipping_listing(
+    checkout: Checkout,
+) -> ShippingMethodChannelListing | None:
+    return (
+        ShippingMethodChannelListing.objects
+        .filter(
+            shipping_method=checkout.shipping_method,
+            channel=checkout.channel,
+            is_active=True,
         )
-        
-        discount = calculate_discount_final(
-            promo_code, subtotal, self.user, self.currency
+        .first()
+    )
+
+
+def _checkout_requires_shipping(checkout: Checkout) -> bool:
+    """True if any line in the checkout requires shipping."""
+    return any(
+        line.variant.is_shipping_required()
+        for line in checkout.lines.select_related(
+            "variant__product__product_type"
         )
-        
-        tax = calculate_tax_final(
-            subtotal, shipping, address
-        )
-        
-        # Calculate total
-        total = subtotal + shipping - discount + tax
-        
-        # Apply gift cards
-        if gift_cards:
-            total = self._apply_gift_cards(total, gift_cards)
-        
-        # Security check: Compare with frontend estimate
-        self._verify_total(checkout_id, total)
-        
-        # Create order
-        order_id = self._create_order(items, total, shipping_method, address)
-        
-        return CheckoutFinal(
-            subtotal=subtotal.net.amount,
-            shipping=shipping.net.amount,
-            discount=discount.net.amount,
-            tax=tax.net.amount,
-            total=total.net.amount,
-            currency=self.currency,
-            order_id=order_id,
-            is_estimated=False
-        )
-    
-    def _load_checkout_items(self, checkout_id: str) -> List[Any]:
-        """Load checkout items from database."""
-        from ecommerce.models.checkout import CheckoutLine
-        
-        return list(CheckoutLine.objects.filter(
-            checkout_id=checkout_id
-        ).select_related('variant', 'variant__product'))
-    
-    def _apply_gift_cards(self, total: TaxedMoney, gift_cards: List[Any]) -> TaxedMoney:
-        """Apply gift cards to total."""
-        from .base_calculations import calculate_gift_card_usage
-        
-        used_amount, _ = calculate_gift_card_usage(gift_cards, total, self.currency)
-        return total - TaxedMoney(net=used_amount, gross=used_amount)
-    
-    def _verify_total(self, checkout_id: Optional[str], backend_total: TaxedMoney):
-        """
-        Security check: verify frontend estimate against backend calculation.
-        
-        If checkout_id is provided, load the frontend estimate from the checkout.
-        """
-        if not checkout_id:
-            return
-        
-        from ecommerce.models.checkout import Checkout
-        
-        try:
-            checkout = Checkout.objects.get(pk=checkout_id)
-            frontend_total = checkout.total
-            
-            if frontend_total:
-                difference = abs(frontend_total.gross.amount - backend_total.gross.amount)
-                if difference > Decimal('0.01'):
-                    logger.warning(
-                        f"Total mismatch for checkout {checkout_id}: "
-                        f"Frontend {frontend_total.gross.amount}, "
-                        f"Backend {backend_total.gross.amount}"
-                    )
-                    # Flag for review
-                    checkout.metadata['total_mismatch'] = {
-                        'frontend': str(frontend_total.gross.amount),
-                        'backend': str(backend_total.gross.amount),
-                        'difference': str(difference)
-                    }
-                    checkout.save(update_fields=['metadata'])
-        except Checkout.DoesNotExist:
-            pass
-    
-    def _create_order(
-        self,
-        items: List[Any],
-        total: TaxedMoney,
-        shipping_method: Any,
-        address: Any
-    ) -> str:
-        """Create order from checkout items."""
-        from ecommerce.models.order import Order, OrderLine
-        
-        # Create order
-        order = Order.objects.create(
-            user=self.user,
-            total_net_amount=total.net.amount,
-            total_gross_amount=total.gross.amount,
-            currency=self.currency,
-            shipping_address=address,
-            shipping_method=shipping_method,
-            status='unfulfilled',
-        )
-        
-        # Create order lines
-        for item in items:
-            OrderLine.objects.create(
-                order=order,
-                variant=item.variant,
-                product_name=item.variant.product.name,
-                variant_name=item.variant.name,
-                quantity=item.quantity,
-                unit_price_net_amount=item.unit_price.net.amount,
-                unit_price_gross_amount=item.unit_price.gross.amount,
-                total_price_net_amount=item.total_price.net.amount,
-                total_price_gross_amount=item.total_price.gross.amount,
-                currency=self.currency,
-                is_shipping_required=item.variant.is_shipping_required(),
-            )
-        
-        return str(order.id)'''
+    )
+
+
+# =====================================================================
+# TOTAL
+# =====================================================================
+
+
+def calculate_checkout_total(
+    checkout: Checkout,
+    country_code: str,
+) -> TaxedMoney:
+    """
+    Return the taxed grand total of a checkout, after gift cards.
+
+    Gift cards reduce the gross amount the customer must pay.
+    The net amount is also reduced, proportionally — gift cards
+    are treated as a payment method, not a discount, so the
+    subtotal is unchanged.
+
+    The total is floored at zero: a gift card cannot over-apply.
+    """
+    subtotal = calculate_checkout_subtotal(checkout, country_code)
+    shipping = calculate_checkout_shipping(checkout, country_code)
+    gross_total = subtotal + shipping
+
+    gift_card_amount = _sum_applied_gift_cards(checkout)
+    if gift_card_amount <= ZERO:
+        return gross_total
+
+    # Apply gift cards to gross, then reduce net proportionally.
+    new_gross = max(
+        gross_total.gross.amount - gift_card_amount,
+        ZERO,
+    )
+    if gross_total.gross.amount == ZERO:
+        ratio = Decimal("0")
+    else:
+        ratio = new_gross / gross_total.gross.amount
+    new_net = (gross_total.net.amount * ratio).quantize(Decimal("0.01"))
+
+    return TaxedMoney(
+        net=Money(new_net, checkout.currency),
+        gross=Money(new_gross, checkout.currency),
+    )
+
+
+def _sum_applied_gift_cards(checkout: Checkout) -> Decimal:
+    """Sum the amount_applied on all CheckoutGiftCard rows."""
+    from ecommerce.models.checkout import CheckoutGiftCard
+
+    total = (
+        CheckoutGiftCard.objects
+        .filter(checkout=checkout)
+        .aggregate(total=Sum("amount_applied"))["total"]
+    )
+    return total or ZERO
+
+
+def calculate_checkout_total_undiscounted(
+    checkout: Checkout,
+    country_code: str,
+) -> TaxedMoney:
+    """Undiscounted subtotal + shipping."""
+    subtotal = calculate_checkout_subtotal_undiscounted(checkout, country_code)
+    shipping = calculate_checkout_shipping(checkout, country_code)
+    return subtotal + shipping
+
+
+# =====================================================================
+# PERSISTENCE
+# =====================================================================
+
+
+@transaction.atomic
+def update_checkout_totals(
+    checkout: Checkout,
+    country_code: str | None = None,
+) -> Checkout:
+    """
+    Compute and persist the checkout's totals.
+
+    Writes:
+        subtotal_net_amount, subtotal_gross_amount
+        shipping_price_net_amount, shipping_price_gross_amount
+        total_net_amount, total_gross_amount
+        base_subtotal_amount, base_total_amount
+
+    Returns the same checkout instance, updated.
+    """
+    if country_code is None:
+        country_code = checkout.get_country()
+
+    subtotal = calculate_checkout_subtotal(checkout, country_code)
+    subtotal_undiscounted = calculate_checkout_subtotal_undiscounted(
+        checkout, country_code
+    )
+    shipping = calculate_checkout_shipping(checkout, country_code)
+    total = calculate_checkout_total(checkout, country_code)
+    total_undiscounted = subtotal_undiscounted + shipping
+
+    checkout.subtotal_net_amount = subtotal.net.amount
+    checkout.subtotal_gross_amount = subtotal.gross.amount
+    checkout.base_subtotal_amount = subtotal_undiscounted.net.amount
+
+    checkout.shipping_price_net_amount = shipping.net.amount
+    checkout.shipping_price_gross_amount = shipping.gross.amount
+
+    checkout.total_net_amount = total.net.amount
+    checkout.total_gross_amount = total.gross.amount
+    checkout.base_total_amount = total_undiscounted.net.amount
+
+    checkout.price_expiration = timezone.now()
+    checkout.last_change = timezone.now()
+
+    checkout.save(update_fields=[
+        "subtotal_net_amount",
+        "subtotal_gross_amount",
+        "base_subtotal_amount",
+        "shipping_price_net_amount",
+        "shipping_price_gross_amount",
+        "total_net_amount",
+        "total_gross_amount",
+        "base_total_amount",
+        "price_expiration",
+        "last_change",
+    ])
+
+    return checkout
+
+
+# =====================================================================
+# HELPERS
+# =====================================================================
+
+
+def _zero_taxed_money(currency: str) -> TaxedMoney:
+    zero = Money(ZERO, currency)
+    return TaxedMoney(net=zero, gross=zero)
