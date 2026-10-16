@@ -1,10 +1,7 @@
 # ecommerce/signals/__init__.py
 
-"""
-Signal registration for the ecommerce app.
-
-Importing this module is what registers all ecommerce signal
-handlers. It is imported from EcommerceConfig.ready().
-"""
-
+from ecommerce.signals import checkout  # noqa: F401
 from ecommerce.signals import order  # noqa: F401
+from ecommerce.signals import payment  # noqa: F401
+from ecommerce.signals import refund  # noqa: F401
+from ecommerce.signals import invoice  # noqa: F401

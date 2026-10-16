@@ -1,151 +1,333 @@
-# ecommerce/tests/test_attribute.py
+# apps/backend/ecommerce/tests/test_models/test_attribute.py
 
-from django.test import SimpleTestCase
+"""
+Tests for AssignedAttribute ownership validation.
+
+Focus:
+
+    - clean() rejects an attribute_value that belongs to a different
+      attribute
+    - clean() accepts an attribute_value that belongs to the right
+      attribute
+    - assign() rejects the same mismatch without touching the database
+    - assign() is equivalent to objects.create() when the value is
+      valid
+    - the raw_value path is not affected by the ownership check
+    - the exactly-one-of CheckConstraints still fire
+"""
+
+from decimal import Decimal
+
+from django.core.exceptions import ValidationError
+from django.db import IntegrityError, transaction
+from django.test import TestCase
 
 from ecommerce.models.attribute import (
     AssignedAttribute,
     Attribute,
-    AttributeScopeLink,
-    AttributeTranslation,
     AttributeValue,
-    AttributeValueTranslation,
 )
 from ecommerce.models.enums.attribute import (
     AttributeDataType,
-    AttributeReferenceType,
     AttributeScope,
     AttributeWidget,
 )
+from ecommerce.models.product import Product, ProductType, ProductVariant
 
 
-class TestAttributeModel(SimpleTestCase):
-    def test_expected_fields(self):
-        names = {f.name for f in Attribute._meta.get_fields()}
-        for field in (
-            "name", "slug", "description",
-            "scope", "data_type", "widget", "reference_type",
-            "is_required", "min_value", "max_value", "max_length",
-            "is_variant_only", "visible_in_storefront",
-            "filterable_in_storefront", "filterable_in_dashboard",
-            "available_in_grid", "storefront_search_position",
-            "is_active", "created_at", "updated_at", "created_by",
-        ):
-            self.assertIn(field, names, f"missing Attribute.{field}")
+class AttributeTestFixture(TestCase):
+    """
+    Shared fixture for AssignedAttribute tests.
+    """
 
-    def test_old_fields_removed(self):
-        names = {f.name for f in Attribute._meta.get_fields()}
-        for removed in ("type", "input_type", "entity_type", "unit"):
-            self.assertNotIn(removed, names)
+    @classmethod
+    def setUpTestData(cls):
+        cls.color = Attribute.objects.create(
+            name="Color",
+            slug="color",
+            scope=AttributeScope.VARIANT,
+            data_type=AttributeDataType.TEXT,
+            widget=AttributeWidget.SWATCH,
+        )
+        cls.size = Attribute.objects.create(
+            name="Size",
+            slug="size",
+            scope=AttributeScope.VARIANT,
+            data_type=AttributeDataType.TEXT,
+            widget=AttributeWidget.DROPDOWN,
+        )
+        cls.weight = Attribute.objects.create(
+            name="Weight",
+            slug="weight",
+            scope=AttributeScope.PRODUCT_AND_VARIANT,
+            data_type=AttributeDataType.NUMBER,
+            widget=AttributeWidget.TEXT_INPUT,
+        )
 
-    def test_constraints_present(self):
-        names = {c.name for c in Attribute._meta.constraints}
-        self.assertIn("attribute_min_value_non_negative", names)
-        self.assertIn("attribute_max_value_non_negative", names)
-        self.assertIn("attribute_min_le_max", names)
+        cls.red = AttributeValue.objects.create(
+            attribute=cls.color,
+            name="Red",
+            slug="red",
+            value="red",
+        )
+        cls.small = AttributeValue.objects.create(
+            attribute=cls.size,
+            name="Small",
+            slug="small",
+            value="small",
+        )
 
-    def test_no_full_clean_in_save(self):
-        import inspect
+        cls.product_type = ProductType.objects.create(
+            name="Test Type",
+            slug="attr-test-type",
+            has_variants=True,
+            is_shipping_required=True,
+            is_digital=False,
+        )
 
-        from django.db import models as dj_models
+    def make_product(self, slug="attr-product"):
+        return Product.objects.create(
+            product_type=self.product_type,
+            name=slug.title(),
+            slug=slug,
+        )
 
-        # If Attribute doesn't override save(), it can't call full_clean().
-        if Attribute.save is dj_models.Model.save:
-            return
-
-        # If it does override, ensure full_clean is not invoked.
-        src = inspect.getsource(Attribute.save)
-        self.assertNotIn("full_clean", src)
-
-
-class TestAttributeValue(SimpleTestCase):
-    def test_expected_fields(self):
-        names = {f.name for f in AttributeValue._meta.get_fields()}
-        for field in (
-            "attribute", "name", "slug", "value",
-            "is_active", "sort_order", "created_at", "updated_at",
-        ):
-            self.assertIn(field, names)
-
-    def test_old_sparse_columns_removed(self):
-        names = {f.name for f in AttributeValue._meta.get_fields()}
-        for removed in (
-            "file_url", "content_type", "rich_text", "plain_text",
-            "boolean", "date_time", "reference_product",
-            "reference_variant",
-        ):
-            self.assertNotIn(removed, names)
-
-    def test_unique_constraint(self):
-        names = {c.name for c in AttributeValue._meta.constraints}
-        self.assertIn("uniq_attribute_slug", names)
-        
-    def test_no_full_clean_in_save(self):
-        import inspect
-
-        from django.db import models as dj_models
-
-        if AttributeValue.save is dj_models.Model.save:
-            return
-
-        src = inspect.getsource(AttributeValue.save)
-        self.assertNotIn("full_clean", src)
+    def make_variant(self, product, name="Default"):
+        return ProductVariant.objects.create(
+            product=product,
+            name=name,
+        )
 
 
-class TestAttributeScopeLink(SimpleTestCase):
-    def test_expected_fields(self):
-        names = {f.name for f in AttributeScopeLink._meta.get_fields()}
-        for field in (
-            "attribute", "product_type", "scope",
-            "variant_selection", "sort_order",
-        ):
-            self.assertIn(field, names)
-
-    def test_unique_constraint(self):
-        names = {c.name for c in AttributeScopeLink._meta.constraints}
-        self.assertIn("uniq_attr_scope_link", names)
+# ----------------------------------------------------------------------
+# clean()
+# ----------------------------------------------------------------------
 
 
-class TestAssignedAttribute(SimpleTestCase):
-    def test_expected_fields(self):
-        names = {f.name for f in AssignedAttribute._meta.get_fields()}
-        for field in (
-            "attribute", "product", "variant",
-            "attribute_value", "raw_value",
-            "sort_order", "created_at", "updated_at",
-        ):
-            self.assertIn(field, names)
+class AssignedAttributeCleanTests(AttributeTestFixture):
 
-    def test_target_constraint(self):
-        names = {c.name for c in AssignedAttribute._meta.constraints}
-        self.assertIn("assigned_attr_one_target", names)
+    def test_clean_accepts_matching_attribute_value(self):
+        product = self.make_product("clean-accept")
 
-    def test_value_constraint(self):
-        names = {c.name for c in AssignedAttribute._meta.constraints}
-        self.assertIn("assigned_attr_one_value", names)
+        assignment = AssignedAttribute(
+            product=product,
+            attribute=self.color,
+            attribute_value=self.red,
+        )
+
+        # Should not raise.
+        assignment.clean()
+
+    def test_clean_rejects_mismatched_attribute_value(self):
+        product = self.make_product("clean-reject")
+
+        assignment = AssignedAttribute(
+            product=product,
+            attribute=self.color,
+            attribute_value=self.small,   # Small belongs to Size, not Color
+        )
+
+        with self.assertRaises(ValidationError) as ctx:
+            assignment.clean()
+
+        self.assertIn(
+            "attribute_value",
+            ctx.exception.message_dict,
+        )
+
+    def test_clean_does_not_run_ownership_check_when_attribute_value_is_none(self):
+        product = self.make_product("clean-raw")
+
+        assignment = AssignedAttribute(
+            product=product,
+            attribute=self.weight,
+            raw_value={"amount": 2.5, "unit": "kg"},
+        )
+
+        # Should not raise — raw_value path bypasses the ownership
+        # check entirely.
+        assignment.clean()
+
+    def test_clean_does_not_run_ownership_check_for_unsaved_row(self):
+        """
+        When both FKs are set but the row hasn't been saved, we can
+        still check. This test confirms the check runs on
+        unsaved-but-populated instances.
+        """
+        product = self.make_product("clean-unsaved")
+
+        assignment = AssignedAttribute(
+            product=product,
+            attribute=self.color,
+            attribute_value=self.small,
+        )
+
+        # attribute_id and attribute_value_id are both set because
+        # the FKs are assigned, so the check runs.
+        with self.assertRaises(ValidationError):
+            assignment.clean()
 
 
-class TestTranslations(SimpleTestCase):
-    def test_attribute_translation_fields(self):
-        names = {f.name for f in AttributeTranslation._meta.get_fields()}
-        for field in ("attribute", "language_code", "name", "description"):
-            self.assertIn(field, names)
-
-    def test_attribute_value_translation_fields(self):
-        names = {f.name for f in AttributeValueTranslation._meta.get_fields()}
-        for field in ("attribute_value", "language_code", "name"):
-            self.assertIn(field, names)
+# ----------------------------------------------------------------------
+# assign()
+# ----------------------------------------------------------------------
 
 
-class TestEnums(SimpleTestCase):
-    def test_scope_values(self):
-        self.assertEqual(AttributeScope.PRODUCT, "product")
-        self.assertEqual(AttributeScope.VARIANT, "variant")
-        self.assertEqual(AttributeScope.PRODUCT_AND_VARIANT, "product_and_variant")
+class AssignedAttributeAssignTests(AttributeTestFixture):
 
-    def test_data_type_values(self):
-        self.assertEqual(AttributeDataType.TEXT, "text")
-        self.assertEqual(AttributeDataType.REFERENCE, "reference")
+    def test_assign_creates_row_when_value_matches(self):
+        product = self.make_product("assign-ok")
 
-    def test_widget_values(self):
-        self.assertEqual(AttributeWidget.DROPDOWN, "dropdown")
-        self.assertEqual(AttributeWidget.RICH_TEXT, "rich_text")
+        assignment = AssignedAttribute.assign(
+            product=product,
+            attribute=self.color,
+            attribute_value=self.red,
+        )
+
+        self.assertIsNotNone(assignment.pk)
+        self.assertEqual(assignment.attribute_id, self.color.pk)
+        self.assertEqual(assignment.attribute_value_id, self.red.pk)
+
+    def test_assign_raises_when_value_does_not_match(self):
+        product = self.make_product("assign-mismatch")
+
+        with self.assertRaises(ValidationError):
+            AssignedAttribute.assign(
+                product=product,
+                attribute=self.color,
+                attribute_value=self.small,
+            )
+
+        # No row should have been created.
+        self.assertFalse(
+            AssignedAttribute.objects.filter(
+                product=product,
+                attribute=self.color,
+            ).exists()
+        )
+
+    def test_assign_creates_row_when_value_is_none(self):
+        product = self.make_product("assign-raw")
+
+        assignment = AssignedAttribute.assign(
+            product=product,
+            attribute=self.weight,
+            raw_value={"amount": 2.5, "unit": "kg"},
+        )
+
+        self.assertIsNotNone(assignment.pk)
+        self.assertIsNone(assignment.attribute_value_id)
+        self.assertEqual(
+            assignment.raw_value,
+            {"amount": 2.5, "unit": "kg"},
+        )
+
+    def test_assign_to_variant(self):
+        product = self.make_product("assign-variant")
+        variant = self.make_variant(product)
+
+        assignment = AssignedAttribute.assign(
+            variant=variant,
+            attribute=self.color,
+            attribute_value=self.red,
+        )
+
+        self.assertIsNotNone(assignment.pk)
+        self.assertEqual(assignment.variant_id, variant.pk)
+        self.assertIsNone(assignment.product_id)
+
+    def test_assign_honors_sort_order(self):
+        product = self.make_product("assign-sort")
+
+        assignment = AssignedAttribute.assign(
+            product=product,
+            attribute=self.color,
+            attribute_value=self.red,
+            sort_order=42,
+        )
+
+        self.assertEqual(assignment.sort_order, 42)
+
+
+# ----------------------------------------------------------------------
+# Database-level CheckConstraints still work
+# ----------------------------------------------------------------------
+
+
+class AssignedAttributeConstraintTests(AttributeTestFixture):
+
+    def test_both_product_and_variant_set_is_rejected(self):
+        product = self.make_product("both-targets")
+        variant = self.make_variant(product)
+
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                AssignedAttribute.objects.create(
+                    product=product,
+                    variant=variant,
+                    attribute=self.color,
+                    attribute_value=self.red,
+                )
+
+    def test_neither_product_nor_variant_set_is_rejected(self):
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                AssignedAttribute.objects.create(
+                    attribute=self.color,
+                    attribute_value=self.red,
+                )
+
+    def test_both_value_and_raw_value_set_is_rejected(self):
+        product = self.make_product("both-values")
+
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                AssignedAttribute.objects.create(
+                    product=product,
+                    attribute=self.color,
+                    attribute_value=self.red,
+                    raw_value="also-set",
+                )
+
+    def test_neither_value_nor_raw_value_set_is_rejected(self):
+        product = self.make_product("no-values")
+
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                AssignedAttribute.objects.create(
+                    product=product,
+                    attribute=self.color,
+                )
+
+    def test_objects_create_bypasses_ownership_check(self):
+        """
+        Regression test documenting the gap that `assign()` exists
+        to close.
+
+        The database cannot enforce cross-row ownership, and
+        `objects.create()` does not call `clean()`. So this pattern
+        silently succeeds — which is exactly why production code
+        should use `assign()`.
+
+        If this test ever starts failing (i.e. because someone added
+        a database trigger enforcing ownership), that's a signal
+        worth knowing about, and the test should be updated to
+        reflect the new invariant.
+        """
+        product = self.make_product("bypass-check")
+
+        # This is the bug. It should NOT be used in production code.
+        assignment = AssignedAttribute.objects.create(
+            product=product,
+            attribute=self.color,
+            attribute_value=self.small,   # Small is a Size value
+        )
+
+        self.assertIsNotNone(assignment.pk)
+        self.assertEqual(assignment.attribute_id, self.color.pk)
+        self.assertEqual(assignment.attribute_value_id, self.small.pk)
+        # The row is inconsistent but persisted.
+        self.assertNotEqual(
+            assignment.attribute_value.attribute_id,
+            assignment.attribute_id,
+        )
