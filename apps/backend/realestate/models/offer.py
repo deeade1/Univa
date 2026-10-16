@@ -12,7 +12,7 @@ Ownership:
 """
 
 from decimal import Decimal
-
+from django.db.models import F
 from django.core.validators import MinValueValidator
 from django.db import models
 from django.utils import timezone
@@ -77,7 +77,7 @@ class Offer(models.Model):
     updated_at = models.DateTimeField(
         auto_now=True,
     )
-
+    
     class Meta:
         ordering = ["-created_at"]
 
@@ -100,6 +100,15 @@ class Offer(models.Model):
             ),
         ]
 
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(
+                    expiration_date__gt=models.F("created_at")
+                ),
+                name="offer_expiration_after_creation",
+            ),
+        ]
+    
     def __str__(self):
         property_title = self.property.title or "No Title"
 

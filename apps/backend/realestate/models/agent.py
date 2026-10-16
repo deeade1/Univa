@@ -9,7 +9,7 @@ from django.conf import settings
 from django.contrib.gis.db import models as gis_models
 from django.contrib.postgres.indexes import GinIndex
 from django.core.validators import MaxValueValidator, MinValueValidator
-from django.db import models
+from django.db import models, transaction
 from django_resized import ResizedImageField
 
 from .base import TimeStampedModel
@@ -24,8 +24,13 @@ class Agent(TimeStampedModel):
     
     agent_profile = models.OneToOneField(
         "realestate.AgentProfile",
-        on_delete=models.CASCADE,
+        on_delete=models.PROTECT,
         related_name="agent",
+        help_text=(
+            "PROTECT: deleting an AgentProfile would cascade to the "
+            "Agent, its Listings, and its Commissions. Retire the "
+            "agent with is_active=False instead."
+        ),
     )
     
     # Internal/operational fields
@@ -160,51 +165,60 @@ class Agent(TimeStampedModel):
         """Get the agent's email from the user model."""
         user = self.user
         return user.email if user else None
-    
+ 
+    @transaction.atomic
     def update_metrics(self):
         """
         Recalculate cached agent performance metrics.
-        Should be called when transactions or listings change.
+
+        Locks the agent row so concurrent calls cannot race on the
+        cached fields. Aggregates transaction sales through the
+        property relation (Transaction has no direct `agent` FK).
         """
-        from .listing import Listing
+        from decimal import Decimal
+
+        from django.db.models import Avg, Sum
+
+        from .agent_rating import AgentRating
         from .transaction import Transaction
-        
-        # Update total listings
-        self.total_listings = self.listings_agent.count()
-        
-        # Update total sales
-        from django.db.models import Sum
-        
-        self.total_sales = (
+        from realestate.constants import TransactionStatus
+
+        locked = (
+            type(self)
+            .objects
+            .select_for_update()
+            .get(pk=self.pk)
+        )
+
+        locked.total_listings = locked.listings_agent.count()
+
+        # Agent → Transaction is via the property.
+        locked.total_sales = (
             Transaction.objects
             .filter(
-                agent=self,
-                status="closed",
+                property__agent=locked,
+                status=TransactionStatus.CLOSED,
             )
-            .aggregate(
-                total=Sum("agreed_price"),
-            )["total"]
-            or 0
+            .aggregate(total=Sum("agreed_price"))["total"]
+            or Decimal("0.00")
         )
-        
-        # Update average rating from agent ratings
-        from .agent_rating import AgentRating
-        
+
         avg_rating = (
             AgentRating.objects
-            .filter(agent=self)
-            .aggregate(
-                avg=Sum("rating") / Count("id") if Count("id") > 0 else 0,
-            )["avg"]
+            .filter(agent=locked)
+            .aggregate(avg=Avg("rating"))["avg"]
         )
-        
+
         if avg_rating is not None:
-            self.agent_rating = round(avg_rating, 2)
-        
-        # Update total reviews
-        self.total_reviews = AgentRating.objects.filter(agent=self).count()
-        
-        self.save(
+            locked.agent_rating = Decimal(str(avg_rating)).quantize(
+                Decimal("0.01"),
+            )
+
+        locked.total_reviews = (
+            AgentRating.objects.filter(agent=locked).count()
+        )
+
+        locked.save(
             update_fields=[
                 "total_listings",
                 "total_sales",
@@ -212,6 +226,12 @@ class Agent(TimeStampedModel):
                 "total_reviews",
             ],
         )
+
+        # Sync caller instance.
+        self.total_listings = locked.total_listings
+        self.total_sales = locked.total_sales
+        self.agent_rating = locked.agent_rating
+        self.total_reviews = locked.total_reviews
     
     @classmethod
     def create_from_user(cls, user, **kwargs):

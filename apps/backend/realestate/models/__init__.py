@@ -28,6 +28,7 @@ from .base import (
     TimeStampedModel,
     listing_dir_path,
 )
+from realestate.constants import TransactionStatus
 # ---------------------------------------------------------------------------
 # Agents / clients
 # ---------------------------------------------------------------------------

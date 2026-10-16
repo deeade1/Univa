@@ -6,7 +6,7 @@ from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models, transaction
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
-from payment.models import PaymentMethod, Transaction
+
 
 logger = logging.getLogger(__name__)
 
@@ -122,11 +122,11 @@ class DriverEarning(models.Model):
         default=PayoutStatus.PENDING,
         db_index=True
     )
-    payout_method = models.CharField(
+    '''payout_method = models.CharField(
         max_length=20,
         choices=PaymentMethod.PaymentType.choices,  
         blank=True
-    )
+    )'''
     payout_reference = models.CharField(
         max_length=100,
         blank=True,

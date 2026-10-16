@@ -369,7 +369,7 @@ class MarkDriverEarningPaid(relay.ClientIDMutation):
         _assert_staff(info.context.user)
         earning = _resolve_earning(driver_earning_id, lock=True)
 
-        if payout_method is not None:
+        '''if payout_method is not None:
             from payment.models import PaymentMethod as PM
             valid_methods = {c.value for c in PM.PaymentType}
             if payout_method not in valid_methods:
@@ -377,7 +377,7 @@ class MarkDriverEarningPaid(relay.ClientIDMutation):
                     f"payout_method must be one of: "
                     f"{', '.join(sorted(valid_methods))}."
                 )
-            earning.payout_method = payout_method
+            earning.payout_method = payout_method'''
 
         try:
             earning.mark_as_paid(reference=payout_reference)

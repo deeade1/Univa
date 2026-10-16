@@ -1,4 +1,4 @@
-from functools import reduce
+'''from functools import reduce
 from operator import add, mul
 from typing import Any, Optional, Union, cast
 
@@ -11,7 +11,7 @@ from graphql.type import GraphQLField
 from graphql.validation import validate
 from graphql.validation.rules.base import ValidationRule
 from graphql.validation.validation import ValidationContext
-
+from ecommerce.models.product import ProductVariantChannelListing
 CostAwareNode = Union[
     Field,
     FragmentDefinition,
@@ -296,4 +296,4 @@ def validate_query_cost(
     )
     if error:
         return validator.cost, error
-    return validator.cost, None
+    return validator.cost, None'''

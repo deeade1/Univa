@@ -77,7 +77,7 @@ class LocationModel(models.Model):
 
     location_source = models.CharField(
         max_length=20,
-        default="gps",
+        default="unknown",
         choices=[
             ("gps", _("GPS")),
             ("network", _("Network")),
@@ -150,8 +150,16 @@ class LocationModel(models.Model):
     # ============================================================
 
     def save(self, *args, **kwargs):
-        """Save with validation and point synchronization."""
-        self.full_clean()
+        """
+        Save with point synchronization.
+
+        Note: `full_clean()` is deliberately NOT called here.
+        Validation is the service layer's responsibility; DB
+        constraints catch the invariants that can be expressed as
+        constraints. `_sync_location_point()` stays because it
+        keeps location_point consistent with latitude/longitude
+        on every save.
+        """
         self._sync_location_point()
         super().save(*args, **kwargs)
 

@@ -47,9 +47,7 @@ class DriverEarningNode(OptimizedDjangoObjectType):
             
             # String fields
             'period': ['exact'],
-            'payout_status': ['exact'],
-            'payout_method': ['exact'],
-            'payout_reference': ['exact', 'icontains'],
+            
             
             # Numeric fields
             'total_earnings': ['gte', 'lte', 'exact'],

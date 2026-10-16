@@ -1,4 +1,5 @@
-﻿# apps/backend/graphq/accounts/mutations/auth.py
+﻿    
+# apps/backend/graphq/accounts/mutations/auth.py
 
 from __future__ import annotations
 
@@ -105,6 +106,20 @@ from notifications.events.constants import ACCOUNT_MAGIC_LINK_REQUESTED
 from univa_jwt.exceptions import JSONRefreshTokenExpired
 from univa_jwt.refresh import RefreshTokenInvalidError
 
+# --- Checkout claim integration --------------------------------------
+# The sign-in mutation is the JWT-side entry point for cart claim.
+# Django-session login uses the `user_logged_in` signal receiver.
+# Both delegate to the same service.
+from ecommerce.middleware.checkout_session import (
+    ANONYMOUS_CHECKOUT_SESSION_KEY,
+)
+from ecommerce.services.checkout.claim import (
+    ClaimError,
+    claim_checkout,
+)
+from ecommerce.services.checkout.lifecycle import (
+    get_checkout_by_token,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -116,26 +131,7 @@ User = get_user_model()
 # TEST / COMPATIBILITY SEAMS
 # ============================================================================
 
-# Keep these module-level aliases intentionally.
-
-# Existing GraphQL tests patch:
-#
-#     graphq.accounts.mutations.auth.revoke_refresh_token
-#
-# Keeping this alias gives the GraphQL adapter a stable patch seam without
-# exposing or reimplementing JWT revocation internals here.
 revoke_refresh_token = revoke_refresh_token_service
-
-
-# Existing GraphQL tests patch:
-#
-#     graphq.accounts.mutations.auth.revoke_all_for_user
-#
-# This remains a service-level dependency. The GraphQL layer does not inspect
-# or manipulate the underlying revocation state.
-#
-# The imported service is already exposed at module scope and therefore
-# remains patchable by the test suite.
 
 
 # ============================================================================
@@ -146,17 +142,6 @@ revoke_refresh_token = revoke_refresh_token_service
 def _get_request(info):
     """
     Resolve the Django request/context from Graphene ResolveInfo.
-
-    Normal Graphene execution:
-
-        info.context -> Django request
-
-    Direct unit tests may pass the context/request object itself:
-
-        mutate_and_get_payload(None, context, ...)
-
-    Supporting both forms keeps the GraphQL adapter easy to test without
-    changing production Graphene behavior.
     """
     return getattr(
         info,
@@ -168,11 +153,6 @@ def _get_request(info):
 def _get_context(info):
     """
     Return the GraphQL/Django context object.
-
-    In Graphene-Django the Django request is normally stored in
-    ``info.context``.
-
-    Direct unit tests may pass the request/context object itself.
     """
     return _get_request(info)
 
@@ -180,9 +160,6 @@ def _get_context(info):
 def _get_ip_address(info):
     """
     Safely extract the client IP address.
-
-    Supports both normal Graphene ResolveInfo and direct unit-test
-    context objects.
     """
     request = _get_request(info)
 
@@ -203,9 +180,6 @@ def _graphql_authentication_error(
 ) -> GraphQLError:
     """
     Convert an internal authentication exception into a GraphQL error.
-
-    Internal implementation details are intentionally hidden from the
-    GraphQL client.
     """
     logger.warning(
         "Authentication operation failed: %s",
@@ -216,6 +190,61 @@ def _graphql_authentication_error(
     return GraphQLError(
         "Authentication request could not be completed."
     )
+
+
+def _claim_anonymous_checkout(info, user) -> None:
+    """
+    Attach any guest checkout stored in the request session to the
+    user who just signed in.
+
+    Called by the JWT sign-in mutation. This is the API-side entry
+    point for guest → user cart claim. The Django session path uses
+    the `user_logged_in` signal receiver instead.
+
+    Best-effort: failures are logged, never raised. Sign-in must not
+    fail because a cart could not be claimed.
+    """
+    request = _get_request(info)
+
+    if request is None or not hasattr(request, "session"):
+        return
+
+    token = request.session.get(ANONYMOUS_CHECKOUT_SESSION_KEY)
+
+    if not token:
+        return
+
+    checkout = get_checkout_by_token(token)
+
+    if checkout is None:
+        # Stale session token — drop it so it doesn't linger.
+        request.session.pop(ANONYMOUS_CHECKOUT_SESSION_KEY, None)
+        return
+
+    try:
+        claim_checkout(checkout, user)
+
+    except ClaimError as exc:
+        logger.warning(
+            "Failed to claim anonymous checkout %s for user %s: %s",
+            token,
+            user.pk,
+            exc,
+        )
+        # Leave the token in the session so a later attempt can retry.
+        return
+
+    except Exception:
+        logger.exception(
+            "Unexpected error claiming anonymous checkout %s "
+            "for user %s.",
+            token,
+            user.pk,
+        )
+        return
+
+    # Success — clear the session token.
+    request.session.pop(ANONYMOUS_CHECKOUT_SESSION_KEY, None)
 
 
 # ============================================================================
@@ -280,7 +309,6 @@ class ObtainJSONWebTokenMutation(
         request = _get_request(info)
         ip_address = _get_ip_address(info)
 
-        # Per-contact + IP protection.
         cls.check_rate_limit(
             f"auth_attempt:{contact}",
             limit=3,
@@ -288,7 +316,6 @@ class ObtainJSONWebTokenMutation(
             identifier=ip_address,
         )
 
-        # Global authentication protection.
         cls.check_global_rate_limit(
             request,
             "authentication",
@@ -383,6 +410,14 @@ class ObtainJSONWebTokenMutation(
             ]
         )
 
+        # --- Guest cart claim -----------------------------------------
+        # Delegates to the canonical claim service. Best-effort: a
+        # claim failure is logged but never blocks sign-in.
+        _claim_anonymous_checkout(info, user)
+
+        # Notify the Django session signal (used by admin/browser logins).
+        # This is a no-op for JWT-only clients because `request.user`
+        # is not set by the JWT authentication.
         user_logged_in.send(
             sender=cls,
             request=request,
@@ -1383,3 +1418,5 @@ class AuthenticationMutations(
     verify_face_for_magic_link = (
         VerifyFaceForMagicLinkMutation.Field()
     )
+    
+    

@@ -336,6 +336,7 @@ _register(
     title="Order received",
     body="Your order has been received.",
     category="order",
+    channels=("in_app", "push", "email"),
     action_url="/orders/{object_id}",
 )
 
@@ -344,6 +345,7 @@ _register(
     title="Order confirmed",
     body="Your order has been confirmed.",
     category="order",
+    channels=("in_app", "push", "email"),
     action_url="/orders/{object_id}",
 )
 
@@ -368,6 +370,7 @@ _register(
     title="Order delivered",
     body="Your order has been delivered.",
     category="order",
+    channels=("in_app", "push", "email"),
     action_url="/orders/{object_id}",
 )
 
@@ -377,6 +380,7 @@ _register(
     body="Your order has been cancelled.",
     category="order",
     priority="high",
+    channels=("in_app", "push", "email"),
     action_url="/orders/{object_id}",
 )
 
@@ -386,6 +390,7 @@ _register(
     body="Your order has been refunded.",
     category="order",
     priority="high",
+    channels=("in_app", "push", "email"),
     action_url="/orders/{object_id}",
 )
 
@@ -408,6 +413,7 @@ _register(
     body="Your payment was successful.",
     category="payment",
     priority="high",
+    channels=("in_app", "push", "email"),
     action_url="/payments/{object_id}",
 )
 
@@ -417,6 +423,7 @@ _register(
     body="Your payment could not be completed.",
     category="payment",
     priority="high",
+    channels=("in_app", "push", "email"),
     action_url="/payments/{object_id}",
 )
 
@@ -1199,6 +1206,69 @@ _register(
     action_url="/products/{object_id}",
 )
 
+
+# ----------------------------------------------------------------------------
+# INVOICE
+# ----------------------------------------------------------------------------
+
+_register(
+    constants.INVOICE_SENT,
+    title="Invoice ready",
+    body="Your invoice is ready to view.",
+    category="invoice",
+    channels=("in_app", "push", "email"),
+    action_url="/invoices/{object_id}",
+)
+
+_register(
+    constants.INVOICE_PAID,
+    title="Invoice paid",
+    body="Your invoice has been paid in full.",
+    category="invoice",
+    priority="high",
+    channels=("in_app", "push", "email"),
+    action_url="/invoices/{object_id}",
+)
+
+_register(
+    constants.INVOICE_OVERDUE,
+    title="Invoice overdue",
+    body="Your invoice is now overdue. Please complete payment.",
+    category="invoice",
+    priority="high",
+    channels=("in_app", "push", "email"),
+    action_url="/invoices/{object_id}",
+)
+
+_register(
+    constants.INVOICE_CANCELLED,
+    title="Invoice cancelled",
+    body="Your invoice has been cancelled.",
+    category="invoice",
+    priority="high",
+    channels=("in_app", "push", "email"),
+    action_url="/invoices/{object_id}",
+)
+
+_register(
+    constants.INVOICE_VOIDED,
+    title="Invoice voided",
+    body="Your invoice has been voided.",
+    category="invoice",
+    priority="high",
+    channels=("in_app", "push", "email"),
+    action_url="/invoices/{object_id}",
+)
+
+_register(
+    constants.INVOICE_REFUNDED,
+    title="Invoice refunded",
+    body="Your invoice has been refunded.",
+    category="invoice",
+    priority="high",
+    channels=("in_app", "push", "email"),
+    action_url="/invoices/{object_id}",
+)
 
 # ============================================================================
 # SYSTEM

@@ -61,11 +61,13 @@ from .queries import (
     ProfileQuery,
     RoleQuery,
     UserQuery,
+    #AuthQuery,
 )
 
 
-class AccountsQuery(
+class AccountsQueries(
     UserQuery,
+    #AuthQuery,
     ProfileQuery,
     AddressQuery,
     RoleQuery,
@@ -85,5 +87,5 @@ class AccountsQuery(
 
 
 __all__ = [
-    "AccountsQuery",
+    "AccountsQueries",
 ]

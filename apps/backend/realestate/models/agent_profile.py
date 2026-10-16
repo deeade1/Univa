@@ -18,8 +18,13 @@ class AgentProfile(models.Model):
     
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
+        on_delete=models.PROTECT,
         related_name="realestate_agent_profile",
+        help_text=(
+            "PROTECT: users with agent profiles have ongoing "
+            "obligations (listings, commissions) and must not be "
+            "hard-deleted. Deactivate the account instead."
+        ),
     )
     
     # Public information

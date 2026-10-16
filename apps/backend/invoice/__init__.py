@@ -1,14 +1,13 @@
-class InvoiceEvents:
-    REQUESTED = "requested"
-    REQUESTED_DELETION = "requested_deletion"
-    CREATED = "created"
-    DELETED = "deleted"
-    SENT = "sent"
+# apps/backend/invoice/__init__.py
 
-    CHOICES = [
-        (REQUESTED, "The invoice was requested"),
-        (REQUESTED_DELETION, "The invoice was requested for deletion"),
-        (CREATED, "The invoice was created"),
-        (DELETED, "The invoice was deleted"),
-        (SENT, "The invoice has been sent"),
-    ]
+# Package initializer for the invoice app.
+#
+# Intentionally empty. The public API of this package is:
+#
+#   - invoice.models          — canonical invoice models
+#   - invoice.enums           — InvoiceStatus, InvoiceEventType, etc.
+#   - invoice.services        — generation, lifecycle, payments, etc.
+#
+# Do not add domain code here. Anything in this file runs on
+# every `import invoice`, including during migrations and
+# management command startup.

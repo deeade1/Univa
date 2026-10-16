@@ -84,11 +84,11 @@ class MoneyFieldDescriptor:
         amount = getattr(instance, self.amount_field, None)
         currency = getattr(instance, self.currency_field, None)
 
-        if amount is None and not currency:
-            return None
-
+        # No amount stored → the Money value is unset.
+        # Do NOT coerce to Money(0); that conflates "unset" with "zero"
+        # and breaks optional Money fields (e.g. discounted_price).
         if amount is None:
-            amount = Decimal("0")
+            return None
 
         if not currency:
             if self.field.null:

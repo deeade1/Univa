@@ -149,6 +149,22 @@ app.conf.task_routes = {
     },
 
     # ------------------------------------------------------------------------
+    # E-COMMERCE — INTERNAL APP PACKAGE (ecommerce.tasks.*)
+    #
+    # Tasks that live under the `ecommerce` app package. Routed to the
+    # same queue as their domain equivalents so a worker started with
+    # `-Q payment,checkout,...` consumes them.
+    # ------------------------------------------------------------------------
+
+    "ecommerce.tasks.payment.*": {
+        "queue": "payment",
+    },
+
+    "ecommerce.tasks.checkout.*": {
+        "queue": "checkout",
+    },
+
+    # ------------------------------------------------------------------------
     # SHIPPING / WAREHOUSE
     # ------------------------------------------------------------------------
 

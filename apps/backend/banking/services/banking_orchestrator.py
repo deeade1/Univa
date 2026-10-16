@@ -6,7 +6,7 @@ from django.utils import timezone
 
 from banking.models.core import Account
 from banking.models.accounting import AccountingManager
-from payment.models import Transaction
+#from payment.models import Transaction
 from banking.services.bank_manager import BankAPIManager
 
 
@@ -28,13 +28,13 @@ class BankingOrchestrator:
             raise ValidationError("Invalid transfer amount")
 
         # 1️⃣ Create transaction
-        txn = Transaction.objects.create(
+        '''txn = Transaction.objects.create(
             user=sender_profile,
             transaction_type="TRANSFER",
             amount=amount,
             status="PENDING",
             description=narration,
-        )
+        )'''
 
         # 2️⃣ Lock and fetch FLOAT account
         float_account = (

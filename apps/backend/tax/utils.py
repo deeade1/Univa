@@ -4,12 +4,12 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Optional
 
 from django.conf import settings
-from prices import TaxedMoney
+from core.pricing import TaxedMoney
 
-from core.prices import MAXIMUM_PRICE
+
 from core.taxes import TaxData, TaxDataError, TaxDataErrorMessage
 from core.utils.country import get_active_country
-
+from core.pricing import MAXIMUM_PRICE
 from . import TaxCalculationStrategy
 
 if TYPE_CHECKING:

@@ -1,8 +1,8 @@
 from decimal import Decimal
 
-from prices import Money, TaxedMoney
+from core.pricing import Money, TaxedMoney
 
-from core.prices import quantize_price
+from core.pricing import quantize_price
 
 
 def calculate_flat_rate_tax(

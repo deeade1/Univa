@@ -32,3 +32,4 @@ DATABASES = {
     }
 }
 
+ENABLE_STUB_PROVIDER = True

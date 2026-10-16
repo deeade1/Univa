@@ -1,0 +1,8 @@
+{% extends "invoice/invoice.html" %}
+
+{% block share_banner %}
+<div style="background: #eef; padding: 0.75rem; margin-bottom: 1.5rem; border-radius: 4px;">
+    This is a shared view of invoice {{ invoice.number }}.
+    The link expires on {{ share.expires_at }}.
+</div>
+{% endblock %}

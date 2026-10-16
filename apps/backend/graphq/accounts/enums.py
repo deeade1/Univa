@@ -1,16 +1,18 @@
+# graphq/accounts/enums.py
+
+"""
+GraphQL enum definitions for accounts.
+"""
+
 import graphene
 from django_countries import countries
 
-from checkout.type import AddressType
-from graphq.core.enums import to_enum
 from graphq.core.utils import str_to_enum
-
-AddressTypeEnum = to_enum(AddressType, type_name="AddressTypeEnum")
-
 
 
 CountryCodeEnum = graphene.Enum(
-    "CountryCode", [(str_to_enum(country[0]), country[0]) for country in countries]
+    "CountryCode",
+    [(str_to_enum(country[0]), country[0]) for country in countries],
 )
 
 

@@ -18,7 +18,7 @@ Real-estate-specific buyer information belongs to Client.
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator
-from django.db import models
+from django.db import models, transaction
 from django.utils import timezone
 
 from realestate.constants import TransactionStatus
@@ -126,27 +126,30 @@ class Transaction(models.Model):
         constraints = [
             models.CheckConstraint(
                 condition=(
-                    models.Q(
-                        status__in=[
-                            TransactionStatus.CLOSED,
-                            TransactionStatus.CANCELLED,
-                        ]
-                    )
-                    | models.Q(agreed_price__isnull=True)
+                    ~models.Q(status=TransactionStatus.CLOSED)
+                    | models.Q(agreed_price__isnull=False)
                 ),
                 name="transaction_agreed_price_required_for_closed",
             ),
             models.CheckConstraint(
                 condition=(
-                    models.Q(
-                        status__in=[
-                            TransactionStatus.CLOSED,
-                            TransactionStatus.CANCELLED,
-                        ]
-                    )
-                    | models.Q(actual_close_date__isnull=True)
+                    ~models.Q(status=TransactionStatus.CLOSED)
+                    | models.Q(actual_close_date__isnull=False)
                 ),
                 name="transaction_close_date_required_for_closed",
+            ),
+            models.UniqueConstraint(
+                fields=["property"],
+                condition=models.Q(
+                    status__in=[
+                        TransactionStatus.PRE_OFFER,
+                        TransactionStatus.OFFER_PENDING,
+                        TransactionStatus.UNDER_CONTRACT,
+                        TransactionStatus.DUE_DILIGENCE,
+                        TransactionStatus.CLOSING,
+                    ]
+                ),
+                name="unique_active_transaction_per_property",
             ),
         ]
 
@@ -196,9 +199,21 @@ class Transaction(models.Model):
                     }
                 )
 
+    @transaction.atomic
     def save(self, *args, **kwargs):
         """
         Save the transaction and synchronize the property's status.
+
+        Wrapped in a transaction so the transaction save and the
+        property status update either both succeed or both fail.
+
+        Note: `self.clean()` runs to enforce the cross-field rules
+        that only apply in Python (CLOSED requires agreed_price
+        and close date). `self.full_clean()` is deliberately NOT
+        called — DB constraints (`transaction_agreed_price_...`,
+        `unique_active_transaction_per_property`) raise
+        IntegrityError, which callers can distinguish from user
+        input errors.
         """
 
         if (
@@ -213,12 +228,12 @@ class Transaction(models.Model):
         ):
             self.actual_close_date = timezone.now().date()
 
-        self.full_clean()
+        self.clean()
 
         super().save(*args, **kwargs)
 
         self._update_property_status()
-
+            
     def _update_property_status(self):
         """
         Synchronize the associated property's status with

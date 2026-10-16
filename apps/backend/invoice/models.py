@@ -1,207 +1,362 @@
 # apps/backend/invoice/models.py
 
+"""
+Canonical invoice models for Univa.
+
+Architectural boundary
+----------------------
+
+An Invoice is a legal request for payment. It knows:
+
+    - who is billing and who is billed
+    - what amount is owed, in what currency
+    - what tax was charged
+    - when it was issued and when it is due
+    - what number identifies it
+
+An Invoice does NOT know:
+
+    - what kind of business transaction produced it
+    - what the line items mean
+    - how payment will be collected
+    - which domain created it
+
+Domains attach through:
+
+    InvoiceSource   — soft references (source_type + source_id)
+    InvoiceEvent    — append-only audit log
+
+Sharing is a capability of the account holder, not a policy of
+the seller. It lives on InvoiceShare, not on Invoice.
+
+This mirrors the design of payment/canonical: the primitive owns
+money, the domain owns workflow, and they meet at soft references
+and append-only events.
+"""
+
 from decimal import Decimal
+from secrets import token_urlsafe
+from uuid import uuid4
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator
-from django.db import models
-from django.db.models import JSONField
+from django.db import models, transaction
+from django.db.models import F, JSONField, Q, Value
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 
-from core.models.metadata import Job, ModelWithMetadata
-from core.models.utils.url_utils import get_frontend_url
-from core.utils import build_absolute_uri
-from core.utils.json_serializer import CustomJsonEncoder
+from core.models.metadata import (
+    CustomJsonEncoder,
+    ModelWithMetadata,
+)
+
+from .enums import (
+    InvoiceEventType,
+    InvoicePaymentType,
+    InvoiceShareChannel,
+    InvoiceStatus,
+)
+
+
+# =====================================================================
+# INVOICE NUMBER SEQUENCE
+# =====================================================================
+
+
+class InvoiceNumberSequence(models.Model):
+    """
+    Per-period sequential counter for invoice numbers.
+
+    One row per (prefix, year, month). Allocation uses
+    select_for_update so concurrent invoice creation produces
+    unique numbers with no gaps.
+
+    Regulatory considerations: in most jurisdictions invoice
+    numbers must be unique and unbroken. This model guarantees
+    both.
+    """
+
+    prefix = models.CharField(max_length=10, default="INV")
+    year = models.PositiveIntegerField()
+    month = models.PositiveIntegerField()
+    next_value = models.PositiveIntegerField(default=1)
+
+    class Meta:
+        db_table = "invoice_number_sequences"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["prefix", "year", "month"],
+                name="unique_invoice_sequence_period",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.prefix}-{self.year}{self.month:02d}@{self.next_value}"
+
+
+# =====================================================================
+# INVOICE PARTY
+# =====================================================================
+
+
+class InvoiceParty(ModelWithMetadata):
+    """
+    An entity that can issue or receive an invoice.
+
+    A party is either an individual or an organization. When
+    `is_organization=True`, `name` is the legal entity name and
+    `tax_id` is the registered tax identifier.
+
+    Parties are not users. A user may have one or more parties
+    associated with them (personal, business, etc.), but the
+    party is what appears on the invoice.
+    """
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="invoice_parties",
+        help_text="Optional link to a Univa account.",
+    )
+    is_organization = models.BooleanField(
+        default=False,
+        help_text=(
+            "True for companies, NGOs, and government bodies. "
+            "The `name` is the legal entity name in that case."
+        ),
+    )
+    name = models.CharField(max_length=255)
+    tax_id = models.CharField(
+        max_length=50,
+        blank=True,
+        help_text=(
+            "Tax identifier (TIN, VAT number, PIN, etc.). "
+            "Often required on B2B invoices."
+        ),
+    )
+
+    email = models.EmailField(blank=True)
+    phone = models.CharField(max_length=20, blank=True)
+
+    billing_address = models.TextField(blank=True)
+    billing_city = models.CharField(max_length=100, blank=True)
+    billing_state = models.CharField(max_length=100, blank=True)
+    billing_country = models.CharField(max_length=100, blank=True)
+    billing_zip = models.CharField(max_length=20, blank=True)
+
+    is_active = models.BooleanField(default=True, db_index=True)
+
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta(ModelWithMetadata.Meta):
+        db_table = "invoice_parties"
+        ordering = ("name", "pk")
+        indexes = [
+            *ModelWithMetadata.Meta.indexes,
+            models.Index(fields=["user"], name="inv_party_user_idx"),
+            models.Index(fields=["name"], name="inv_party_name_idx"),
+            models.Index(
+                fields=["is_active", "is_organization"],
+                name="inv_party_active_org_idx",
+            ),
+        ]
+
+    def __str__(self):
+        return self.name
+
+    def as_billing_dict(self):
+        """
+        Canonical shape used by templates and the PDF renderer.
+
+        Never includes user-account details; only what appears
+        on a legal invoice.
+        """
+        return {
+            "name": self.name,
+            "tax_id": self.tax_id,
+            "email": self.email,
+            "phone": self.phone,
+            "address": self.billing_address,
+            "city": self.billing_city,
+            "state": self.billing_state,
+            "country": self.billing_country,
+            "zip": self.billing_zip,
+            "is_organization": self.is_organization,
+        }
+
+
+# =====================================================================
+# INVOICE
+# =====================================================================
 
 
 class InvoiceQueryset(models.QuerySet["Invoice"]):
     """
-    Custom queryset for Invoice.
+    Query helpers for Invoice.
     """
 
-    def ready(self):
+    def for_source(self, source_type, source_id):
         """
-        Return successfully completed invoice jobs when JobStatus
-        is available.
+        Return invoices whose InvoiceSource matches the given
+        domain reference.
 
-        Falls back to the normal queryset if the project-level
-        JobStatus enum is unavailable.
+        This is how a domain finds its invoice without an FK.
         """
-        try:
-            from core import JobStatus
+        return self.filter(
+            sources__source_type=source_type,
+            sources__source_id=str(source_id),
+        ).distinct()
 
-            return self.filter(job__status=JobStatus.SUCCESS)
-        except ImportError:
-            return self
+    def unpaid(self):
+        return self.filter(
+            status__in=[
+                InvoiceStatus.ISSUED,
+                InvoiceStatus.SENT,
+                InvoiceStatus.PARTIALLY_PAID,
+                InvoiceStatus.OVERDUE,
+            ],
+        )
+
+    def overdue(self, on=None):
+        if on is None:
+            on = timezone.now().date()
+        return self.filter(
+            due_date__lt=on,
+            status__in=[
+                InvoiceStatus.ISSUED,
+                InvoiceStatus.SENT,
+                InvoiceStatus.PARTIALLY_PAID,
+            ],
+        )
 
 
 InvoiceManager = models.Manager.from_queryset(InvoiceQueryset)
 
 
-class Invoice(ModelWithMetadata, Job):
+class Invoice(ModelWithMetadata):
     """
-    Universal invoice model for Univa.
+    Canonical invoice.
 
-    The model intentionally uses lazy Django model references for
-    ecommerce.Order and transport.Booking. This prevents circular
-    imports between the invoice and ecommerce applications.
+    One Invoice represents one legal request for payment. It does
+    not know how it was produced or how it will be collected.
+    Domains attach via InvoiceSource; payment is applied via
+    InvoicePayment.
     """
 
-    INVOICE_STATUS = [
-        ("DRAFT", "Draft"),
-        ("SENT", "Sent"),
-        ("PAID", "Paid"),
-        ("OVERDUE", "Overdue"),
-        ("CANCELLED", "Cancelled"),
-        ("REFUNDED", "Refunded"),
-        ("VOID", "Void"),
-    ]
-
     # ------------------------------------------------------------------
-    # Core relationships
+    # Identity
     # ------------------------------------------------------------------
 
-    order = models.ForeignKey(
-        "ecommerce.Order",
-        related_name="invoices",
-        null=True,
-        blank=True,
-        on_delete=models.SET_NULL,
-        help_text="Associated ecommerce order, if applicable.",
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid4,
+        editable=False,
     )
-
-    booking = models.ForeignKey(
-        "transport.Booking",
-        related_name="booking_invoices",
-        null=True,
-        blank=True,
-        on_delete=models.SET_NULL,
-        help_text="Associated transport booking, if applicable.",
-    )
-
-    customer = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="invoices_as_customer",
-        help_text="Customer this invoice is for.",
-    )
-
-    # ------------------------------------------------------------------
-    # Invoice identifiers
-    # ------------------------------------------------------------------
-
     number = models.CharField(
-        max_length=255,
-        null=True,
-        blank=True,
-        db_index=True,
-        help_text="Primary invoice number.",
-    )
-
-    invoice_number = models.CharField(
         max_length=50,
-        null=True,
-        blank=True,
+        unique=True,
         db_index=True,
-        help_text="Alternative invoice number retained for compatibility.",
+        help_text=(
+            "Legally significant invoice number. Globally unique "
+            "across all invoices, regardless of source domain."
+        ),
     )
 
     # ------------------------------------------------------------------
-    # Invoice dates and terms
+    # Parties
+    # ------------------------------------------------------------------
+
+    issuer = models.ForeignKey(
+        InvoiceParty,
+        on_delete=models.PROTECT,
+        related_name="invoices_issued",
+        help_text="The party sending this invoice.",
+    )
+    recipient = models.ForeignKey(
+        InvoiceParty,
+        on_delete=models.PROTECT,
+        related_name="invoices_received",
+        help_text="The party this invoice is addressed to.",
+    )
+
+    # ------------------------------------------------------------------
+    # Currency and amounts
+    # ------------------------------------------------------------------
+
+    currency = models.CharField(
+        max_length=3,
+        help_text="ISO currency code (e.g. NGN, USD).",
+    )
+    subtotal_amount = models.DecimalField(
+        max_digits=20,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        validators=[MinValueValidator(Decimal("0.00"))],
+        help_text="Sum of line items before tax, shipping, discount.",
+    )
+    tax_amount = models.DecimalField(
+        max_digits=20,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        validators=[MinValueValidator(Decimal("0.00"))],
+    )
+    discount_amount = models.DecimalField(
+        max_digits=20,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        validators=[MinValueValidator(Decimal("0.00"))],
+    )
+    shipping_amount = models.DecimalField(
+        max_digits=20,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        validators=[MinValueValidator(Decimal("0.00"))],
+    )
+    total_amount = models.DecimalField(
+        max_digits=20,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        validators=[MinValueValidator(Decimal("0.00"))],
+        help_text="subtotal + tax + shipping − discount.",
+    )
+    amount_paid = models.DecimalField(
+        max_digits=20,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        validators=[MinValueValidator(Decimal("0.00"))],
+        help_text="Sum of completed InvoicePayment rows.",
+    )
+    balance_due = models.DecimalField(
+        max_digits=20,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        validators=[MinValueValidator(Decimal("0.00"))],
+        help_text="total_amount − amount_paid, floored at zero.",
+    )
+
+    # ------------------------------------------------------------------
+    # Dates and terms
     # ------------------------------------------------------------------
 
     issue_date = models.DateField(
         default=timezone.now,
         help_text="Date the invoice was issued.",
     )
-
-    created = models.DateTimeField(
-        null=True,
-        blank=True,
-        help_text="When the invoice was created.",
-    )
-
     due_date = models.DateField(
         null=True,
         blank=True,
-        help_text="Date the invoice is due.",
+        help_text="Date payment is due. Null for on-receipt terms.",
     )
-
     payment_terms = models.CharField(
         max_length=100,
         blank=True,
-        default="Net 30",
-        help_text="Payment terms.",
-    )
-
-    # ------------------------------------------------------------------
-    # Financial information
-    # ------------------------------------------------------------------
-
-    subtotal = models.DecimalField(
-        max_digits=15,
-        decimal_places=2,
-        default=Decimal("0.00"),
-        validators=[MinValueValidator(Decimal("0.00"))],
-        help_text="Subtotal before taxes and discounts.",
-    )
-
-    tax_amount = models.DecimalField(
-        max_digits=15,
-        decimal_places=2,
-        default=Decimal("0.00"),
-        validators=[MinValueValidator(Decimal("0.00"))],
-        help_text="Total tax amount.",
-    )
-
-    discount_amount = models.DecimalField(
-        max_digits=15,
-        decimal_places=2,
-        default=Decimal("0.00"),
-        validators=[MinValueValidator(Decimal("0.00"))],
-        help_text="Total discount amount.",
-    )
-
-    shipping_amount = models.DecimalField(
-        max_digits=15,
-        decimal_places=2,
-        default=Decimal("0.00"),
-        validators=[MinValueValidator(Decimal("0.00"))],
-        help_text="Shipping cost.",
-    )
-
-    total_amount = models.DecimalField(
-        max_digits=15,
-        decimal_places=2,
-        default=Decimal("0.00"),
-        validators=[MinValueValidator(Decimal("0.00"))],
-        help_text="Total amount due.",
-    )
-
-    amount_paid = models.DecimalField(
-        max_digits=15,
-        decimal_places=2,
-        default=Decimal("0.00"),
-        validators=[MinValueValidator(Decimal("0.00"))],
-        help_text="Amount already paid.",
-    )
-
-    balance_due = models.DecimalField(
-        max_digits=15,
-        decimal_places=2,
-        default=Decimal("0.00"),
-        validators=[MinValueValidator(Decimal("0.00"))],
-        help_text="Remaining balance due.",
-    )
-
-    currency = models.CharField(
-        max_length=3,
-        default="USD",
-        help_text="ISO currency code such as USD, EUR, or NGN.",
+        default="",
+        help_text="Free-text terms, e.g. 'Net 30'.",
     )
 
     # ------------------------------------------------------------------
@@ -210,638 +365,275 @@ class Invoice(ModelWithMetadata, Job):
 
     status = models.CharField(
         max_length=20,
-        choices=INVOICE_STATUS,
-        default="DRAFT",
+        choices=InvoiceStatus.choices,
+        default=InvoiceStatus.DRAFT,
         db_index=True,
-        help_text="Current invoice status.",
     )
 
     # ------------------------------------------------------------------
-    # Billing information
+    # Rendering
     # ------------------------------------------------------------------
 
-    billing_name = models.CharField(
-        max_length=255,
-        blank=True,
-        help_text="Billing name.",
-    )
-
-    billing_email = models.EmailField(
-        blank=True,
-        help_text="Billing email.",
-    )
-
-    billing_phone = models.CharField(
-        max_length=20,
-        blank=True,
-        help_text="Billing phone.",
-    )
-
-    billing_address = models.TextField(
-        blank=True,
-        help_text="Billing address.",
-    )
-
-    billing_city = models.CharField(
-        max_length=100,
-        blank=True,
-        help_text="Billing city.",
-    )
-
-    billing_state = models.CharField(
-        max_length=100,
-        blank=True,
-        help_text="Billing state or province.",
-    )
-
-    billing_country = models.CharField(
-        max_length=100,
-        blank=True,
-        help_text="Billing country.",
-    )
-
-    billing_zip = models.CharField(
-        max_length=20,
-        blank=True,
-        help_text="Billing ZIP or postal code.",
-    )
-
-    # ------------------------------------------------------------------
-    # External URL and invoice file
-    # ------------------------------------------------------------------
-
-    external_url = models.URLField(
+    rendered_file = models.FileField(
+        upload_to="invoices/rendered",
         null=True,
         blank=True,
-        max_length=2048,
-        help_text="External URL for the invoice.",
+        help_text="PDF rendering of this invoice, if generated.",
     )
-
-    invoice_file = models.FileField(
-        upload_to="invoices",
+    rendered_at = models.DateTimeField(
         null=True,
         blank=True,
-        help_text="PDF or invoice file attachment.",
     )
 
     # ------------------------------------------------------------------
-    # Metadata
+    # Presentation
     # ------------------------------------------------------------------
 
     notes = models.TextField(
         blank=True,
-        help_text="Additional notes.",
+        help_text="Notes visible on the invoice.",
     )
-
     terms_and_conditions = models.TextField(
         blank=True,
-        help_text="Invoice terms and conditions.",
     )
 
-    metadata = JSONField(
-        default=dict,
-        blank=True,
-        encoder=CustomJsonEncoder,
-        help_text="Additional invoice metadata.",
-    )
-
-    # ------------------------------------------------------------------
-    # Payment information
-    # ------------------------------------------------------------------
-
-    payment_method = models.CharField(
-        max_length=50,
-        blank=True,
-        help_text="Payment method used.",
-    )
-
-    payment_date = models.DateTimeField(
-        null=True,
-        blank=True,
-        help_text="When the invoice was paid.",
-    )
-
-    payment_reference = models.CharField(
-        max_length=100,
-        blank=True,
-        db_index=True,
-        help_text="Payment reference or transaction ID.",
-    )
-
-    # ------------------------------------------------------------------
-    # Audit fields
-    # ------------------------------------------------------------------
-
-    created_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="invoices_created",
-        help_text="User who created this invoice.",
-    )
-
-    sent_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="invoices_sent",
-        help_text="User who sent this invoice.",
-    )
-
-    verified_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="invoices_verified",
-        help_text="User who verified this invoice.",
-    )
-
-    sent_at = models.DateTimeField(
-        null=True,
-        blank=True,
-        help_text="When the invoice was sent.",
-    )
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True, db_index=True)
 
     objects = InvoiceManager()
 
     class Meta(ModelWithMetadata.Meta):
         db_table = "invoices"
-
-        ordering = ("-created", "-created_at")
-
+        ordering = ("-issue_date", "-created_at")
         indexes = [
+            *ModelWithMetadata.Meta.indexes,
             models.Index(
-                fields=["number", "status"],
-                name="invoice_num_status_idx",
+                fields=["recipient", "status"],
+                name="inv_recipient_status_idx",
             ),
             models.Index(
-                fields=["invoice_number", "status"],
-                name="invoice_alt_num_idx",
-            ),
-            models.Index(
-                fields=["customer", "status"],
-                name="invoice_cust_status_idx",
+                fields=["issuer", "status"],
+                name="inv_issuer_status_idx",
             ),
             models.Index(
                 fields=["due_date", "status"],
-                name="invoice_due_status_idx",
+                name="inv_due_status_idx",
             ),
             models.Index(
-                fields=["created", "status"],
-                name="invoice_created_idx",
+                fields=["issue_date", "status"],
+                name="inv_issue_status_idx",
             ),
-            models.Index(
-                fields=["created_at", "status"],
-                name="invoice_createdat_idx",
+        ]
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(total_amount__gte=0),
+                name="invoice_total_non_negative",
             ),
-            models.Index(
-                fields=["payment_reference"],
-                name="invoice_payment_ref_idx",
+            models.CheckConstraint(
+                condition=Q(amount_paid__gte=0),
+                name="invoice_paid_non_negative",
             ),
-            models.Index(
-                fields=["order", "status"],
-                name="invoice_order_status_idx",
-            ),
-            models.Index(
-                fields=["booking", "status"],
-                name="invoice_booking_status_idx",
+            models.CheckConstraint(
+                condition=Q(balance_due__gte=0),
+                name="invoice_balance_non_negative",
             ),
         ]
 
-        verbose_name = _("Invoice")
-        verbose_name_plural = _("Invoices")
-
     def __str__(self):
-        number = (
-            self.number
-            or self.invoice_number
-            or f"INV-{self.pk}"
+        return f"{self.number} — {self.recipient.name}"
+
+    # ------------------------------------------------------------------
+    # Validation
+    # ------------------------------------------------------------------
+
+    def clean(self):
+        super().clean()
+        errors = {}
+
+        if self.currency and len(self.currency) != 3:
+            errors["currency"] = _(
+                "Currency must be exactly three characters."
+            )
+
+        if self.currency:
+            self.currency = self.currency.upper()
+
+        if self.due_date and self.due_date < self.issue_date:
+            errors["due_date"] = _(
+                "Due date cannot be earlier than issue date."
+            )
+
+        if errors:
+            raise ValidationError(errors)
+
+    # ------------------------------------------------------------------
+    # Computed amounts
+    # ------------------------------------------------------------------
+
+    def recalculate_totals(self):
+        """
+        Recompute subtotal, tax, shipping, total, and balance from
+        line items and payments.
+
+        This is the ONLY place that writes those header fields.
+        Called by services after mutating line items or payments.
+        Does not save.
+        """
+        line_items = self.line_items.all()
+
+        subtotal = sum(
+            (item.line_total for item in line_items),
+            Decimal("0.00"),
+        )
+        tax = sum(
+            (item.tax_amount for item in line_items),
+            Decimal("0.00"),
         )
 
-        customer_name = (
-            self.customer.email
-            if self.customer
-            else "No Customer"
-        )
-
-        return (
-            f"{number} - "
-            f"{customer_name} - "
-            f"{self.get_status_display()}"
-        )
-
-    # ------------------------------------------------------------------
-    # URL helpers
-    # ------------------------------------------------------------------
-
-    @property
-    def url(self):
-        if self.invoice_file:
-            return build_absolute_uri(self.invoice_file.url)
-
-        return self.external_url
-
-    @url.setter
-    def url(self, value):
-        self.external_url = value
-
-    # ------------------------------------------------------------------
-    # Persistence
-    # ------------------------------------------------------------------
-
-    def save(self, *args, **kwargs):
-        if not self.number and not self.invoice_number:
-            self.number = self.generate_invoice_number()
-            self.invoice_number = self.number
-
-        if not self.created:
-            self.created = timezone.now()
-
-        self.calculate_totals()
-
-        if (
-            self.balance_due <= Decimal("0.00")
-            and self.status not in {"CANCELLED", "VOID"}
-        ):
-            self.status = "PAID"
-
-        super().save(*args, **kwargs)
-
-    # ------------------------------------------------------------------
-    # Financial calculations
-    # ------------------------------------------------------------------
-
-    def calculate_totals(self):
+        self.subtotal_amount = subtotal
+        self.tax_amount = tax
         self.total_amount = (
-            self.subtotal
+            self.subtotal_amount
             + self.tax_amount
             + self.shipping_amount
             - self.discount_amount
         )
 
-        self.balance_due = (
-            self.total_amount
-            - self.amount_paid
+        paid = (
+            self.payments.aggregate(
+                total=Coalesce(
+                    models.Sum("amount"),
+                    Value(Decimal("0.00")),
+                )
+            )["total"]
+            or Decimal("0.00")
         )
-
-        return self.total_amount
-
-    # ------------------------------------------------------------------
-    # Invoice numbering
-    # ------------------------------------------------------------------
-
-    def generate_invoice_number(self):
-        prefix = "INV"
-        now = timezone.now()
-
-        year = now.strftime("%Y")
-        month = now.strftime("%m")
-
-        today_count = (
-            self.__class__.objects.filter(
-                created_at__date=now.date()
-            ).count()
-            + 1
-        )
-
-        return f"{prefix}-{year}{month}-{today_count:04d}"
-
-    # ------------------------------------------------------------------
-    # Invoice updates
-    # ------------------------------------------------------------------
-
-    def update_invoice(self, number=None, url=None):
-        if number is not None:
-            self.number = number
-            self.invoice_number = number
-
-        if url is not None:
-            self.external_url = url
-
-        self.save(
-            update_fields=[
-                "number",
-                "invoice_number",
-                "external_url",
-            ]
+        self.amount_paid = paid
+        self.balance_due = max(
+            self.total_amount - self.amount_paid,
+            Decimal("0.00"),
         )
 
     # ------------------------------------------------------------------
-    # Invoice lifecycle
+    # Properties
     # ------------------------------------------------------------------
 
-    def mark_as_sent(self, sent_by=None):
-        self.status = "SENT"
-        self.sent_at = timezone.now()
+    @property
+    def is_paid(self):
+        return self.status == InvoiceStatus.PAID
 
-        if sent_by:
-            self.sent_by = sent_by
+    @property
+    def is_terminal(self):
+        return self.status in {
+            InvoiceStatus.CANCELLED,
+            InvoiceStatus.VOID,
+            InvoiceStatus.REFUNDED,
+        }
 
-        self.save(
-            update_fields=[
-                "status",
-                "sent_at",
-                "sent_by",
-            ]
+    @property
+    def source_summary(self):
+        """
+        Human-readable summary of the sources attached to this
+        invoice. Used by templates.
+        """
+        return ", ".join(
+            f"{s.source_type}:{s.source_reference or s.source_id}"
+            for s in self.sources.all()
         )
 
-        self._send_notification(
-            "INVOICE.SENT",
-            sent_by,
+
+# =====================================================================
+# INVOICE SOURCE (soft reference)
+# =====================================================================
+
+
+class InvoiceSource(models.Model):
+    """
+    A soft reference from an Invoice to the domain object that
+    produced it.
+
+    Domains do not FK to Invoice, and Invoice does not FK to
+    domains. This table carries the linkage:
+
+        source_type       = "order"           (opaque string)
+        source_id         = UUID of the Order
+        source_reference  = "ORD-12345"       (optional, display only)
+
+    An Invoice can have zero or more sources. Most have exactly
+    one. A compound invoice (e.g. an order plus a booking on the
+    same bill) has two.
+
+    This mirrors Payment.source_type / Payment.source_id.
+    """
+
+    invoice = models.ForeignKey(
+        Invoice,
+        on_delete=models.CASCADE,
+        related_name="sources",
+    )
+    source_type = models.CharField(
+        max_length=50,
+        db_index=True,
+        help_text=(
+            "Domain-specific source kind: 'order', 'booking', "
+            "'payment', 'lease', 'fare', etc. Opaque to Invoice."
+        ),
+    )
+    source_id = models.CharField(
+        max_length=100,
+        db_index=True,
+        help_text=(
+            "Identifier of the source object in its own domain. "
+            "Treated as opaque by Invoice."
+        ),
+    )
+    source_reference = models.CharField(
+        max_length=150,
+        blank=True,
+        help_text=(
+            "Optional human-readable reference, e.g. 'ORD-12345'. "
+            "Never parsed for behavior."
+        ),
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "invoice_sources"
+        ordering = ("invoice_id", "source_type", "source_id")
+        constraints = [
+            models.UniqueConstraint(
+                fields=["invoice", "source_type", "source_id"],
+                name="unique_invoice_source",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["source_type", "source_id"],
+                name="inv_src_type_id_idx",
+            ),
+        ]
+
+    def __str__(self):
+        return (
+            f"{self.source_type}:{self.source_reference or self.source_id}"
         )
 
-    def mark_as_paid(
-        self,
-        payment_method="",
-        payment_reference="",
-        verified_by=None,
-    ):
-        self.status = "PAID"
-        self.payment_date = timezone.now()
-        self.payment_method = payment_method
-        self.payment_reference = payment_reference
-        self.amount_paid = self.total_amount
-        self.balance_due = Decimal("0.00")
 
-        if verified_by:
-            self.verified_by = verified_by
-
-        self.save()
-
-        self._send_notification(
-            "INVOICE.PAID",
-            verified_by,
-        )
-
-    def mark_as_overdue(self):
-        if (
-            self.status == "SENT"
-            and self.due_date
-            and timezone.now().date() > self.due_date
-        ):
-            self.status = "OVERDUE"
-            self.save(update_fields=["status"])
-
-            self._send_notification(
-                "INVOICE.OVERDUE"
-            )
-
-    def partial_payment(
-        self,
-        amount,
-        payment_method="",
-        payment_reference="",
-    ):
-        amount = Decimal(str(amount))
-
-        if amount <= Decimal("0.00"):
-            raise ValueError(
-                "Payment amount must be greater than zero."
-            )
-
-        if amount > self.balance_due:
-            raise ValueError(
-                "Payment amount exceeds balance due."
-            )
-
-        self.amount_paid += amount
-        self.balance_due = (
-            self.total_amount
-            - self.amount_paid
-        )
-
-        if self.balance_due <= Decimal("0.00"):
-            self.status = "PAID"
-
-        self.payment_method = payment_method
-        self.payment_reference = payment_reference
-
-        self.save()
-
-        InvoicePayment.objects.create(
-            invoice=self,
-            amount=amount,
-            payment_method=payment_method,
-            payment_reference=payment_reference,
-        )
-
-        self._send_notification(
-            "INVOICE.PARTIAL_PAYMENT",
-            parameters={
-                "amount": str(amount),
-                "balance_due": str(self.balance_due),
-            },
-        )
-
-    def cancel_invoice(
-        self,
-        reason="",
-        cancelled_by=None,
-    ):
-        if self.status in {
-            "PAID",
-            "CANCELLED",
-            "VOID",
-        }:
-            raise ValueError(
-                f"Cannot cancel invoice with status: {self.status}"
-            )
-
-        self.status = "CANCELLED"
-
-        if reason:
-            self.notes = (
-                f"{self.notes}\nCANCELLED: {reason}"
-                if self.notes
-                else f"CANCELLED: {reason}"
-            )
-
-        if cancelled_by:
-            self.verified_by = cancelled_by
-
-        self.save()
-
-        self._send_notification(
-            "INVOICE.CANCELLED",
-            cancelled_by,
-            {"reason": reason},
-        )
-
-    def void_invoice(
-        self,
-        reason="",
-        voided_by=None,
-    ):
-        if self.status in {
-            "PAID",
-            "CANCELLED",
-        }:
-            raise ValueError(
-                f"Cannot void invoice with status: {self.status}"
-            )
-
-        self.status = "VOID"
-
-        if reason:
-            self.notes = (
-                f"{self.notes}\nVOIDED: {reason}"
-                if self.notes
-                else f"VOIDED: {reason}"
-            )
-
-        if voided_by:
-            self.verified_by = voided_by
-
-        self.save()
-
-        self._send_notification(
-            "INVOICE.VOIDED",
-            voided_by,
-            {"reason": reason},
-        )
-
-    # ------------------------------------------------------------------
-    # Notifications
-    # ------------------------------------------------------------------
-
-    def _send_notification(
-        self,
-        event_type,
-        user=None,
-        parameters=None,
-    ):
-        try:
-            from notifications.services.emitter import (
-                emit_notification_event,
-            )
-
-            target_user = user or self.customer
-
-            if not target_user:
-                return
-
-            emit_notification_event(
-                user=target_user,
-                event=event_type,
-                module="invoice",
-                payload={
-                    "invoice_id": str(self.pk),
-                    "invoice_number": (
-                        self.number
-                        or self.invoice_number
-                    ),
-                    "total_amount": str(
-                        self.total_amount
-                    ),
-                    "status": self.status,
-                    "due_date": (
-                        str(self.due_date)
-                        if self.due_date
-                        else None
-                    ),
-                    "order_id": (
-                        str(self.order.pk)
-                        if self.order
-                        else None
-                    ),
-                    "booking_id": (
-                        str(self.booking.pk)
-                        if self.booking
-                        else None
-                    ),
-                    **(parameters or {}),
-                },
-            )
-
-        except ImportError:
-            import logging
-
-            logger = logging.getLogger(__name__)
-
-            logger.warning(
-                "Notification system not available. "
-                "Event: %s for invoice %s",
-                event_type,
-                self.pk,
-            )
-
-    # ------------------------------------------------------------------
-    # Display helpers
-    # ------------------------------------------------------------------
-
-    def get_payment_status_display(self):
-        if self.balance_due <= Decimal("0.00"):
-            return "Fully Paid"
-
-        if self.amount_paid > Decimal("0.00"):
-            return (
-                "Partially Paid "
-                f"(Balance: {self.balance_due})"
-            )
-
-        return "Unpaid"
-
-    def get_frontend_url(self):
-        return get_frontend_url(
-            "invoice",
-            {
-                "id": self.pk,
-                "token": self.pk,
-            },
-        )
-
-    def get_absolute_url(self):
-        return self.get_frontend_url()
-
-    # ------------------------------------------------------------------
-    # PDF generation
-    # ------------------------------------------------------------------
-
-    def generate_pdf(self) -> bytes | None:
-        try:
-            from weasyprint import HTML
-            from gotomarket.views import build_invoice_html
-
-            seller_name = getattr(
-                settings,
-                "MARKET_NAME",
-                "Univa Market",
-            )
-
-            seller_addr = getattr(
-                settings,
-                "MARKET_ADDRESS",
-                "",
-            )
-
-            seller_phone = getattr(
-                settings,
-                "MARKET_PHONE",
-                "",
-            )
-
-            html_content = build_invoice_html(
-                self,
-                seller_name,
-                seller_addr,
-                seller_phone,
-            )
-
-            return HTML(
-                string=html_content,
-                base_url="",
-            ).write_pdf()
-
-        except ImportError:
-            return None
+# =====================================================================
+# INVOICE LINE ITEM
+# =====================================================================
 
 
 class InvoiceLineItem(models.Model):
     """
-    Individual line item belonging to an invoice.
+    A single line on an invoice.
+
+    Quantity is Decimal(12,3) so that market items sold by weight
+    (2.5 kg of beef) are representable.
+
+    Domain-specific line detail (SKU, service period, distance)
+    goes in `metadata`. Invoice never reads metadata for behavior.
     """
 
     invoice = models.ForeignKey(
@@ -850,66 +642,44 @@ class InvoiceLineItem(models.Model):
         related_name="line_items",
     )
 
-    description = models.CharField(
-        max_length=255,
+    description = models.CharField(max_length=500)
+    quantity = models.DecimalField(
+        max_digits=12,
+        decimal_places=3,
+        default=Decimal("1.000"),
+        validators=[MinValueValidator(Decimal("0.001"))],
     )
-
-    sku = models.CharField(
-        max_length=100,
-        blank=True,
-    )
-
-    quantity = models.PositiveIntegerField(
-        default=1,
-    )
-
     unit_price = models.DecimalField(
-        max_digits=15,
+        max_digits=20,
         decimal_places=2,
-        validators=[
-            MinValueValidator(
-                Decimal("0.00")
-            )
-        ],
+        validators=[MinValueValidator(Decimal("0.00"))],
     )
-
-    discount = models.DecimalField(
-        max_digits=15,
+    discount_amount = models.DecimalField(
+        max_digits=20,
         decimal_places=2,
         default=Decimal("0.00"),
-        validators=[
-            MinValueValidator(
-                Decimal("0.00")
-            )
-        ],
+        validators=[MinValueValidator(Decimal("0.00"))],
     )
-
-    tax = models.DecimalField(
-        max_digits=15,
-        decimal_places=2,
-        default=Decimal("0.00"),
-        validators=[
-            MinValueValidator(
-                Decimal("0.00")
-            )
-        ],
-    )
-
     tax_rate = models.DecimalField(
         max_digits=5,
         decimal_places=2,
         default=Decimal("0.00"),
+        validators=[MinValueValidator(Decimal("0.00"))],
+        help_text="Tax rate as a percentage (e.g. 7.5 for 7.5%).",
     )
-
-    total = models.DecimalField(
-        max_digits=15,
+    tax_amount = models.DecimalField(
+        max_digits=20,
         decimal_places=2,
-        validators=[
-            MinValueValidator(
-                Decimal("0.00")
-            )
-        ],
+        default=Decimal("0.00"),
+        validators=[MinValueValidator(Decimal("0.00"))],
     )
+    line_total = models.DecimalField(
+        max_digits=20,
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal("0.00"))],
+        help_text="(quantity × unit_price) − discount + tax.",
+    )
+    currency = models.CharField(max_length=3)
 
     metadata = JSONField(
         default=dict,
@@ -917,63 +687,54 @@ class InvoiceLineItem(models.Model):
         encoder=CustomJsonEncoder,
     )
 
-    created_at = models.DateTimeField(
-        auto_now_add=True,
-    )
-
-    updated_at = models.DateTimeField(
-        auto_now=True,
-    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         db_table = "invoice_line_items"
-        ordering = ["id"]
-
-        verbose_name = _("Invoice Line Item")
-        verbose_name_plural = _("Invoice Line Items")
+        ordering = ("invoice_id", "pk")
+        indexes = [
+            models.Index(
+                fields=["invoice"],
+                name="inv_line_invoice_idx",
+            ),
+        ]
 
     def __str__(self):
         return (
-            f"{self.description} - "
-            f"{self.quantity} x "
-            f"{self.unit_price}"
+            f"{self.description} — "
+            f"{self.quantity} × {self.unit_price}"
         )
 
     def save(self, *args, **kwargs):
-        self.total = (
+        self.line_total = (
             (self.quantity * self.unit_price)
-            - self.discount
-            + self.tax
+            - self.discount_amount
+            + self.tax_amount
         )
-
         super().save(*args, **kwargs)
+
+
+# =====================================================================
+# INVOICE PAYMENT
+# =====================================================================
 
 
 class InvoicePayment(models.Model):
     """
-    Payment record associated with an invoice.
+    A payment applied to an invoice.
+
+    This model does NOT own the payment lifecycle. The payment
+    system owns it. InvoicePayment is a projection: it records
+    which payments have been applied to which invoices.
+
+    Every row carries an idempotency_key. A second call to
+    apply_payment() with the same key is a no-op that returns
+    the existing row. Retries are safe.
+
+    Reversals are represented as separate rows with a negative
+    amount (payment_type=REVERSAL), not mutations of the original.
     """
-
-    PAYMENT_METHODS = [
-        ("BANK_TRANSFER", "Bank Transfer"),
-        ("CREDIT_CARD", "Credit Card"),
-        ("DEBIT_CARD", "Debit Card"),
-        ("MOBILE_MONEY", "Mobile Money"),
-        ("PAYPAL", "PayPal"),
-        ("CRYPTO", "Cryptocurrency"),
-        ("CASH", "Cash"),
-        ("WALLET", "Digital Wallet"),
-        ("OTHER", "Other"),
-    ]
-
-    PAYMENT_STATUS = [
-        ("PENDING", "Pending"),
-        ("PROCESSING", "Processing"),
-        ("COMPLETED", "Completed"),
-        ("FAILED", "Failed"),
-        ("REFUNDED", "Refunded"),
-        ("PARTIAL", "Partially Refunded"),
-    ]
 
     invoice = models.ForeignKey(
         Invoice,
@@ -981,47 +742,51 @@ class InvoicePayment(models.Model):
         related_name="payments",
     )
 
-    amount = models.DecimalField(
-        max_digits=15,
-        decimal_places=2,
-        validators=[
-            MinValueValidator(
-                Decimal("0.01")
-            )
-        ],
-    )
-
-    payment_method = models.CharField(
-        max_length=20,
-        choices=PAYMENT_METHODS,
-    )
-
-    payment_reference = models.CharField(
-        max_length=100,
+    idempotency_key = models.CharField(
+        max_length=150,
         unique=True,
+        help_text=(
+            "Caller-supplied key. A second call with the same key "
+            "is a no-op that returns the existing row."
+        ),
+    )
+
+    payment_type = models.CharField(
+        max_length=50,
+        choices=InvoicePaymentType.choices,
         db_index=True,
     )
-
-    payment_date = models.DateTimeField(
-        auto_now_add=True,
-    )
-
-    status = models.CharField(
-        max_length=20,
-        choices=PAYMENT_STATUS,
-        default="PENDING",
-        db_index=True,
-    )
-
-    transaction_id = models.CharField(
+    payment_id = models.CharField(
         max_length=100,
         blank=True,
+        db_index=True,
+        help_text=(
+            "Identifier in the source system (payment execution "
+            "UUID, bank reference, etc.). Opaque."
+        ),
     )
 
-    gateway_response = JSONField(
-        default=dict,
+    amount = models.DecimalField(
+        max_digits=20,
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal("-999999999.99"))],
+        help_text=(
+            "Positive for applied payments, negative for "
+            "reversals and refunds."
+        ),
+    )
+    currency = models.CharField(max_length=3)
+
+    applied_at = models.DateTimeField(
+        default=timezone.now,
+        db_index=True,
+    )
+    applied_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
         blank=True,
-        encoder=CustomJsonEncoder,
+        on_delete=models.SET_NULL,
+        related_name="invoice_payments_applied",
     )
 
     metadata = JSONField(
@@ -1030,163 +795,292 @@ class InvoicePayment(models.Model):
         encoder=CustomJsonEncoder,
     )
 
-    created_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="invoice_payments_created",
-    )
-
-    verified_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="invoice_payments_verified",
-    )
-
-    created_at = models.DateTimeField(
-        auto_now_add=True,
-    )
-
-    updated_at = models.DateTimeField(
-        auto_now=True,
-    )
+    created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         db_table = "invoice_payments"
-
-        ordering = ["-payment_date"]
-
+        ordering = ("-applied_at",)
         indexes = [
             models.Index(
-                fields=["invoice", "status"],
-                name="inv_pay_inv_status_idx",
+                fields=["invoice", "applied_at"],
+                name="inv_pay_invoice_applied_idx",
             ),
             models.Index(
-                fields=["payment_reference"],
-                name="inv_pay_ref_idx",
-            ),
-            models.Index(
-                fields=["payment_date", "status"],
-                name="inv_pay_date_status_idx",
-            ),
-            models.Index(
-                fields=["payment_method", "status"],
-                name="inv_pay_method_idx",
+                fields=["payment_type", "payment_id"],
+                name="inv_pay_type_id_idx",
             ),
         ]
 
-        verbose_name = _("Invoice Payment")
-        verbose_name_plural = _("Invoice Payments")
-
     def __str__(self):
         return (
-            f"Payment {self.payment_reference} - "
-            f"{self.amount} ({self.status})"
+            f"{self.payment_type} {self.amount} "
+            f"on {self.invoice.number}"
         )
 
     def clean(self):
-        if self.amount <= Decimal("0.00"):
+        super().clean()
+
+        if self.amount == Decimal("0.00"):
             raise ValidationError(
-                "Payment amount must be greater than zero."
+                {"amount": _("Payment amount must not be zero.")}
             )
 
-        if (
-            self.status == "COMPLETED"
-            and not self.transaction_id
-        ):
+        if self.currency and len(self.currency) != 3:
             raise ValidationError(
-                "Transaction ID is required for completed payments."
+                {"currency": _("Currency must be exactly three characters.")}
             )
 
-    def mark_as_completed(self, verified_by=None):
-        self.status = "COMPLETED"
 
-        if verified_by:
-            self.verified_by = verified_by
+# =====================================================================
+# INVOICE EVENT (append-only audit log)
+# =====================================================================
 
-        self.save(
+
+class InvoiceEvent(models.Model):
+    """
+    Append-only audit log for invoice lifecycle.
+
+    Mirrors OrderEvent and PaymentExecutionEvent. Notifications
+    subscribe to these events via signals; the invoice model
+    itself does not send notifications.
+    """
+
+    invoice = models.ForeignKey(
+        Invoice,
+        on_delete=models.CASCADE,
+        related_name="events",
+    )
+    type = models.CharField(
+        max_length=30,
+        choices=InvoiceEventType.choices,
+        db_index=True,
+    )
+    occurred_at = models.DateTimeField(
+        default=timezone.now,
+        db_index=True,
+    )
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="invoice_events_acted",
+    )
+    parameters = JSONField(
+        default=dict,
+        blank=True,
+        encoder=CustomJsonEncoder,
+    )
+
+    class Meta:
+        db_table = "invoice_events"
+        ordering = ("-occurred_at",)
+        indexes = [
+            models.Index(
+                fields=["invoice", "occurred_at"],
+                name="inv_event_inv_time_idx",
+            ),
+            models.Index(
+                fields=["type", "occurred_at"],
+                name="inv_event_type_time_idx",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.type} on {self.invoice.number}"
+
+
+# =====================================================================
+# INVOICE SHARE
+# =====================================================================
+
+
+def _generate_share_token():
+    """
+    Module-level factory so migration files can serialize the
+    default. A lambda would break makemigrations.
+    """
+    return token_urlsafe(32)
+
+
+class InvoiceShare(ModelWithMetadata):
+    """
+    A user-authorized share of an Invoice.
+
+    Creating a share does not deliver anything. It mints an
+    opaque token that grants the holder read access to a bounded
+    representation of the invoice.
+
+    A user creates a share when they want to send an invoice
+    receipt to a friend, accountant, tax authority, or support
+    agent. They can revoke it at any time. It expires on its own.
+
+    Sharing is a capability of the account holder, not a policy
+    of the seller.
+    """
+
+    invoice = models.ForeignKey(
+        Invoice,
+        on_delete=models.CASCADE,
+        related_name="shares",
+    )
+
+    token = models.CharField(
+        max_length=64,
+        unique=True,
+        db_index=True,
+        default=_generate_share_token,
+        editable=False,
+        help_text=(
+            "URL-safe opaque token granting read access. "
+            "Never expose the invoice pk in a share URL."
+        ),
+    )
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="invoice_shares_created",
+        help_text=(
+            "The user who authorized this share. Typically the "
+            "invoice recipient, but can be the issuer."
+        ),
+    )
+
+    label = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text=(
+            "User-supplied label, e.g. 'Accountant Q3'. For the "
+            "user's own organization only."
+        ),
+    )
+
+    recipient_email = models.EmailField(blank=True)
+    recipient_phone = models.CharField(max_length=20, blank=True)
+
+    channel = models.CharField(
+        max_length=20,
+        choices=InvoiceShareChannel.choices,
+        default=InvoiceShareChannel.LINK_COPY,
+    )
+
+    include_line_items = models.BooleanField(
+        default=True,
+        help_text=(
+            "Whether the shared view shows individual line items. "
+            "False shares a summary-only view (header + totals)."
+        ),
+    )
+
+    expires_at = models.DateTimeField(db_index=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    revoked_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="invoice_shares_revoked",
+    )
+    revoked_reason = models.CharField(max_length=255, blank=True)
+
+    first_viewed_at = models.DateTimeField(null=True, blank=True)
+    last_viewed_at = models.DateTimeField(null=True, blank=True)
+    view_count = models.PositiveIntegerField(default=0)
+
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta(ModelWithMetadata.Meta):
+        db_table = "invoice_shares"
+        ordering = ("-created_at",)
+        indexes = [
+            *ModelWithMetadata.Meta.indexes,
+            models.Index(
+                fields=["invoice", "revoked_at"],
+                name="inv_share_inv_revoked_idx",
+            ),
+            models.Index(
+                fields=["created_by", "created_at"],
+                name="inv_share_user_time_idx",
+            ),
+            models.Index(
+                fields=["expires_at"],
+                name="inv_share_expires_idx",
+            ),
+        ]
+
+    def __str__(self):
+        return f"Share {self.token[:8]}… of {self.invoice.number}"
+
+    # ------------------------------------------------------------------
+    # State
+    # ------------------------------------------------------------------
+
+    @property
+    def is_active(self):
+        return (
+            self.revoked_at is None
+            and self.expires_at > timezone.now()
+        )
+
+    @property
+    def is_revoked(self):
+        return self.revoked_at is not None
+
+    @property
+    def is_expired(self):
+        return (
+            self.revoked_at is None
+            and self.expires_at <= timezone.now()
+        )
+
+    # ------------------------------------------------------------------
+    # Mutations
+    # ------------------------------------------------------------------
+
+    @transaction.atomic
+    def revoke(self, *, by=None, reason=""):
+        """
+        Revoke this share. Idempotent.
+        """
+        locked = type(self).objects.select_for_update().get(pk=self.pk)
+
+        if locked.revoked_at is not None:
+            return
+
+        locked.revoked_at = timezone.now()
+        locked.revoked_by = by
+        locked.revoked_reason = reason
+        locked.save(
             update_fields=[
-                "status",
-                "verified_by",
+                "revoked_at",
+                "revoked_by",
+                "revoked_reason",
+                "updated_at",
             ]
         )
 
-        invoice = self.invoice
-
-        invoice.amount_paid += self.amount
-        invoice.balance_due = (
-            invoice.total_amount
-            - invoice.amount_paid
+        InvoiceEvent.objects.create(
+            invoice=locked.invoice,
+            type=InvoiceEventType.SHARE_REVOKED,
+            actor=by,
+            parameters={"share_id": str(locked.pk)},
         )
 
-        if invoice.balance_due <= Decimal("0.00"):
-            invoice.status = "PAID"
+        self.revoked_at = locked.revoked_at
 
-        invoice.save()
-
-        invoice._send_notification(
-            "INVOICE.PAYMENT_RECEIVED",
-            verified_by,
-            {
-                "payment_id": str(self.pk),
-                "amount": str(self.amount),
-                "payment_method": self.payment_method,
-            },
-        )
-
-    def mark_as_failed(self):
-        self.status = "FAILED"
-
-        self.save(
-            update_fields=["status"]
-        )
-
-        self.invoice._send_notification(
-            "INVOICE.PAYMENT_FAILED",
-            parameters={
-                "payment_id": str(self.pk),
-                "payment_reference": (
-                    self.payment_reference
-                ),
-            },
-        )
-
-    def mark_as_refunded(self, amount=None):
-        self.status = "REFUNDED"
-
-        self.save(
-            update_fields=["status"]
-        )
-
-        refund_amount = (
-            Decimal(str(amount))
-            if amount is not None
-            else self.amount
-        )
-
-        invoice = self.invoice
-
-        invoice.amount_paid -= refund_amount
-
-        if invoice.amount_paid < Decimal("0.00"):
-            invoice.amount_paid = Decimal("0.00")
-
-        invoice.balance_due = (
-            invoice.total_amount
-            - invoice.amount_paid
-        )
-
-        invoice.save()
-
-        invoice._send_notification(
-            "INVOICE.REFUNDED",
-            parameters={
-                "payment_id": str(self.pk),
-                "refund_amount": str(
-                    refund_amount
-                ),
-            },
+    @transaction.atomic
+    def record_view(self):
+        """
+        Increment view counters. Called by the public read view.
+        """
+        now = timezone.now()
+        type(self).objects.filter(pk=self.pk).update(
+            view_count=F("view_count") + 1,
+            last_viewed_at=now,
+            first_viewed_at=Coalesce(
+                F("first_viewed_at"),
+                Value(now),
+            ),
         )

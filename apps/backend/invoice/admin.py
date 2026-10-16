@@ -1,564 +1,1028 @@
 # apps/backend/invoice/admin.py
+
 import json
 
 from django.contrib import admin
 from django.urls import reverse
 from django.utils.html import format_html
-from django.utils.safestring import mark_safe
 from django.utils.translation import gettext_lazy as _
 
-from core import JobStatus
+from .enums import (
+    InvoiceEventType,
+    InvoicePaymentType,
+    InvoiceShareChannel,
+    InvoiceStatus,
+)
+from .models import (
+    Invoice,
+    InvoiceEvent,
+    InvoiceLineItem,
+    InvoiceParty,
+    InvoicePayment,
+    InvoiceShare,
+    InvoiceSource,
+)
 
-from .models import Invoice, InvoiceLineItem, InvoicePayment
+
+# =====================================================================
+# INVOICE PARTY
+# =====================================================================
+
+
+@admin.register(InvoiceParty)
+class InvoicePartyAdmin(admin.ModelAdmin):
+    list_display = (
+        "name",
+        "is_organization",
+        "tax_id",
+        "email",
+        "user_link",
+        "is_active",
+    )
+    list_filter = (
+        "is_organization",
+        "is_active",
+    )
+    search_fields = (
+        "name",
+        "tax_id",
+        "email",
+        "user__email",
+    )
+    raw_id_fields = ("user",)
+    readonly_fields = ("created_at", "updated_at")
+
+    fieldsets = (
+        (
+            "Identity",
+            {
+                "fields": (
+                    "name",
+                    "is_organization",
+                    "tax_id",
+                    "user",
+                    "is_active",
+                )
+            },
+        ),
+        (
+            "Contact",
+            {
+                "fields": (
+                    "email",
+                    "phone",
+                )
+            },
+        ),
+        (
+            "Billing address",
+            {
+                "fields": (
+                    "billing_address",
+                    ("billing_city", "billing_state"),
+                    ("billing_country", "billing_zip"),
+                )
+            },
+        ),
+        (
+            "Audit",
+            {
+                "fields": ("created_at", "updated_at"),
+                "classes": ("collapse",),
+            },
+        ),
+    )
+
+    def user_link(self, obj):
+        if not obj.user_id:
+            return "-"
+        url = reverse("admin:accounts_user_change", args=(obj.user_id,))
+        return format_html('<a href="{}">{}</a>', url, obj.user.email)
+    user_link.short_description = _("User")
+    user_link.admin_order_field = "user__email"
+
+
+# =====================================================================
+# INLINE ADMINS
+# =====================================================================
 
 
 class InvoiceLineItemInline(admin.TabularInline):
-    """Inline admin for invoice line items."""
     model = InvoiceLineItem
     extra = 0
     fields = (
-        'description',
-        'sku',
-        'quantity',
-        'unit_price',
-        'discount',
-        'tax',
-        'tax_rate',
-        'total',
+        "description",
+        "quantity",
+        "unit_price",
+        "discount_amount",
+        "tax_rate",
+        "tax_amount",
+        "line_total",
+        "currency",
     )
-    readonly_fields = ('total',)
-    ordering = ('id',)
+    readonly_fields = ("line_total",)
+    ordering = ("pk",)
     show_change_link = True
 
 
 class InvoicePaymentInline(admin.TabularInline):
-    """Inline admin for invoice payments."""
     model = InvoicePayment
     extra = 0
     fields = (
-        'amount',
-        'payment_method',
-        'payment_reference',
-        'status',
-        'payment_date',
-        'transaction_id',
+        "idempotency_key",
+        "payment_type",
+        "payment_id",
+        "amount",
+        "currency",
+        "applied_at",
+        "applied_by",
     )
-    readonly_fields = ('payment_date',)
-    ordering = ('-payment_date',)
+    readonly_fields = (
+        "idempotency_key",
+        "payment_type",
+        "payment_id",
+        "amount",
+        "currency",
+        "applied_at",
+        "applied_by",
+    )
+    ordering = ("-applied_at",)
+    can_delete = False
     show_change_link = True
+
+
+class InvoiceSourceInline(admin.TabularInline):
+    model = InvoiceSource
+    extra = 0
+    fields = (
+        "source_type",
+        "source_id",
+        "source_reference",
+    )
+    readonly_fields = (
+        "source_type",
+        "source_id",
+        "source_reference",
+    )
+    ordering = ("source_type", "source_id")
+    can_delete = False
+    show_change_link = True
+
+
+class InvoiceShareInline(admin.TabularInline):
+    model = InvoiceShare
+    extra = 0
+    fields = (
+        "token_short",
+        "label",
+        "channel",
+        "expires_at",
+        "is_active_display",
+        "view_count",
+    )
+    readonly_fields = (
+        "token_short",
+        "label",
+        "channel",
+        "expires_at",
+        "is_active_display",
+        "view_count",
+    )
+    ordering = ("-created_at",)
+    can_delete = False
+    show_change_link = True
+
+    def token_short(self, obj):
+        return f"{obj.token[:12]}…" if obj.token else "-"
+    token_short.short_description = _("Token")
+
+    def is_active_display(self, obj):
+        if obj.is_revoked:
+            return format_html(
+                '<span style="color: gray;">{}</span>',
+                _("Revoked"),
+            )
+        if obj.is_expired:
+            return format_html(
+                '<span style="color: red;">{}</span>',
+                _("Expired"),
+            )
+        return format_html(
+            '<span style="color: green;">{}</span>',
+            _("Active"),
+        )
+    is_active_display.short_description = _("State")
+
+
+# =====================================================================
+# INVOICE
+# =====================================================================
 
 
 @admin.register(Invoice)
 class InvoiceAdmin(admin.ModelAdmin):
-    """Admin interface for Invoice model."""
-    
     list_display = (
-        'number',
-        'customer_link',
-        'order_link',
-        'booking_link',
-        'total_amount',
-        'status_badge',
-        'payment_status',
-        'issue_date',
-        'due_date',
-        'created_at',
-        'download_link',
+        "number",
+        "recipient_link",
+        "issuer_link",
+        "total_amount",
+        "currency",
+        "status_badge",
+        "payment_status",
+        "issue_date",
+        "due_date",
+        "rendered_link",
     )
-    
+
     list_filter = (
-        'status',
-        'issue_date',
-        'due_date',
-        'currency',
-        ('created_at', admin.DateFieldListFilter),
-        'created_by',
+        "status",
+        "currency",
+        "issue_date",
+        "due_date",
+        "issuer",
     )
-    
+
     search_fields = (
-        'number',
-        'invoice_number',
-        'customer__email',
-        'customer__first_name',
-        'customer__last_name',
-        'billing_email',
-        'billing_name',
-        'payment_reference',
+        "number",
+        "recipient__name",
+        "recipient__email",
+        "issuer__name",
+        "sources__source_reference",
+        "sources__source_id",
     )
-    
-    raw_id_fields = ('customer', 'order', 'booking', 'created_by', 'sent_by', 'verified_by')
-    
+
+    raw_id_fields = (
+        "issuer",
+        "recipient",
+    )
+
     readonly_fields = (
-        'created_at',
-        'updated_at',
-        'sent_at',
-        'balance_due',
-        'status_badge',
-        'payment_status',
-        'url_link',
-        'file_preview',
-        'metadata_display',
-        'events_link',
+        "id",
+        "number",
+        "subtotal_amount",
+        "tax_amount",
+        "total_amount",
+        "amount_paid",
+        "balance_due",
+        "rendered_at",
+        "status_badge",
+        "payment_status",
+        "created_at",
+        "updated_at",
+        "rendered_preview",
+        "events_link",
+        "shares_link",
+        "metadata_display",
     )
-    
-    inlines = [InvoiceLineItemInline, InvoicePaymentInline]
-    
+
+    inlines = [
+        InvoiceLineItemInline,
+        InvoicePaymentInline,
+        InvoiceSourceInline,
+        InvoiceShareInline,
+    ]
+
     fieldsets = (
-        ('Invoice Information', {
-            'fields': (
-                ('number', 'invoice_number'),
-                ('status_badge', 'payment_status'),
-                ('customer', 'order', 'booking'),
-                ('issue_date', 'due_date'),
-                ('payment_terms', 'currency'),
-            )
-        }),
-        ('Billing Information', {
-            'fields': (
-                'billing_name',
-                'billing_email',
-                'billing_phone',
-                ('billing_address', 'billing_city'),
-                ('billing_state', 'billing_country'),
-                'billing_zip',
-            ),
-            'classes': ('collapse',)
-        }),
-        ('Financial Details', {
-            'fields': (
-                ('subtotal', 'tax_amount'),
-                ('discount_amount', 'shipping_amount'),
-                ('total_amount', 'amount_paid'),
-                'balance_due',
-            )
-        }),
-        ('Payment Information', {
-            'fields': (
-                'payment_method',
-                'payment_reference',
-                'payment_date',
-            ),
-            'classes': ('collapse',)
-        }),
-        ('Files & URLs', {
-            'fields': (
-                'invoice_file',
-                'file_preview',
-                'external_url',
-                'url_link',
-            ),
-            'classes': ('collapse',)
-        }),
-        ('Audit & Metadata', {
-            'fields': (
-                ('created_by', 'sent_by', 'verified_by'),
-                ('created_at', 'updated_at', 'sent_at'),
-                'metadata_display',
-                'events_link',
-            ),
-            'classes': ('collapse',)
-        }),
-        ('Notes', {
-            'fields': ('notes', 'terms_and_conditions'),
-            'classes': ('collapse',)
-        }),
+        (
+            _("Identity"),
+            {
+                "fields": (
+                    "id",
+                    "number",
+                    ("status_badge", "payment_status"),
+                    ("issue_date", "due_date", "payment_terms"),
+                    "currency",
+                )
+            },
+        ),
+        (
+            _("Parties"),
+            {
+                "fields": (
+                    "issuer",
+                    "recipient",
+                )
+            },
+        ),
+        (
+            _("Amounts"),
+            {
+                "fields": (
+                    ("subtotal_amount", "tax_amount"),
+                    ("discount_amount", "shipping_amount"),
+                    ("total_amount", "amount_paid"),
+                    "balance_due",
+                )
+            },
+        ),
+        (
+            _("Presentation"),
+            {
+                "fields": (
+                    "notes",
+                    "terms_and_conditions",
+                ),
+                "classes": ("collapse",),
+            },
+        ),
+        (
+            _("Rendering"),
+            {
+                "fields": (
+                    "rendered_file",
+                    "rendered_at",
+                    "rendered_preview",
+                ),
+                "classes": ("collapse",),
+            },
+        ),
+        (
+            _("Audit"),
+            {
+                "fields": (
+                    ("created_at", "updated_at"),
+                    "events_link",
+                    "shares_link",
+                    "metadata_display",
+                ),
+                "classes": ("collapse",),
+            },
+        ),
     )
-    
-    actions = ['regenerate_invoices', 'mark_as_sent', 'mark_as_paid', 'mark_as_overdue']
-    
+
+    actions = [
+        "action_mark_issued",
+        "action_mark_sent",
+        "action_mark_overdue",
+        "action_render_pdf",
+    ]
+
     def get_queryset(self, request):
-        """Optimize queryset with select_related and prefetch_related."""
-        return super().get_queryset(request).select_related(
-            'customer',
-            'order',
-            'booking',
-            'created_by',
-            'sent_by',
-            'verified_by',
-        ).prefetch_related(
-            'line_items',
-            'payments',
+        return (
+            super()
+            .get_queryset(request)
+            .select_related("issuer", "recipient")
+            .prefetch_related(
+                "line_items",
+                "payments",
+                "sources",
+                "shares",
+                "events",
+            )
         )
-    
-    # =========================================================================
-    # List Display Methods
-    # =========================================================================
-    
-    def customer_link(self, obj):
-        """Display customer with link to user admin."""
-        if not obj.customer:
-            return "-"
-        url = reverse("admin:accounts_user_change", args=(obj.customer.id,))
+
+    # ------------------------------------------------------------------
+    # List display
+    # ------------------------------------------------------------------
+
+    def recipient_link(self, obj):
+        url = reverse(
+            "admin:invoice_invoiceparty_change",
+            args=(obj.recipient_id,),
+        )
         return format_html(
             '<a href="{}">{}</a>',
             url,
-            obj.customer.email or str(obj.customer)
+            obj.recipient.name,
         )
-    customer_link.short_description = _("Customer")
-    customer_link.admin_order_field = 'customer__email'
-    
-    def order_link(self, obj):
-        """Display order with link to order admin."""
-        if not obj.order:
-            return "-"
-        if hasattr(obj.order, 'number'):
-            display = f"#{obj.order.number}"
-        else:
-            display = f"Order {obj.order.id}"
-        url = reverse("admin:ecommerce_order_change", args=(obj.order.id,))
-        return format_html('<a href="{}">{}</a>', url, display)
-    order_link.short_description = _("Order")
-    order_link.admin_order_field = 'order__number'
-    
-    def booking_link(self, obj):
-        """Display booking with link to booking admin."""
-        if not obj.booking:
-            return "-"
-        url = reverse("admin:transport_booking_change", args=(obj.booking.id,))
+    recipient_link.short_description = _("Recipient")
+    recipient_link.admin_order_field = "recipient__name"
+
+    def issuer_link(self, obj):
+        url = reverse(
+            "admin:invoice_invoiceparty_change",
+            args=(obj.issuer_id,),
+        )
         return format_html(
-            '<a href="{}">Booking #{}</a>',
+            '<a href="{}">{}</a>',
             url,
-            obj.booking.id
+            obj.issuer.name,
         )
-    booking_link.short_description = _("Booking")
-    
+    issuer_link.short_description = _("Issuer")
+    issuer_link.admin_order_field = "issuer__name"
+
     def status_badge(self, obj):
-        """Display status with color badge."""
         status_colors = {
-            'DRAFT': 'gray',
-            'SENT': 'blue',
-            'PAID': 'green',
-            'OVERDUE': 'red',
-            'CANCELLED': 'orange',
-            'REFUNDED': 'purple',
-            'VOID': 'dark',
+            InvoiceStatus.DRAFT: "#6c757d",
+            InvoiceStatus.ISSUED: "#0d6efd",
+            InvoiceStatus.SENT: "#17a2b8",
+            InvoiceStatus.PAID: "#28a745",
+            InvoiceStatus.PARTIALLY_PAID: "#fd7e14",
+            InvoiceStatus.OVERDUE: "#dc3545",
+            InvoiceStatus.CANCELLED: "#6f42c1",
+            InvoiceStatus.REFUNDED: "#6f42c1",
+            InvoiceStatus.VOID: "#343a40",
         }
-        color = status_colors.get(obj.status, 'gray')
+        color = status_colors.get(obj.status, "#6c757d")
         return format_html(
             '<span style="display: inline-block; padding: 2px 8px; '
             'background-color: {}; color: white; border-radius: 3px; '
             'font-weight: bold;">{}</span>',
             color,
-            obj.get_status_display().upper()
+            obj.get_status_display().upper(),
         )
     status_badge.short_description = _("Status")
-    status_badge.admin_order_field = 'status'
-    
+    status_badge.admin_order_field = "status"
+
     def payment_status(self, obj):
-        """Display payment status."""
-        if obj.balance_due <= 0:
+        if obj.balance_due <= 0 and obj.amount_paid > 0:
             return format_html(
-                '<span style="color: green; font-weight: bold;">✓ Fully Paid</span>'
+                '<span style="color: #28a745; font-weight: bold;">'
+                '✓ {}</span>',
+                _("Paid"),
             )
-        elif obj.amount_paid > 0:
+        if obj.amount_paid > 0:
             return format_html(
-                '<span style="color: orange; font-weight: bold;">Partially Paid</span>'
+                '<span style="color: #fd7e14; font-weight: bold;">'
+                '{}</span>',
+                _("Partial"),
             )
-        else:
-            return format_html(
-                '<span style="color: red; font-weight: bold;">Unpaid</span>'
-            )
-    payment_status.short_description = _("Payment Status")
-    
-    def download_link(self, obj):
-        """Display download link for invoice file."""
-        if not obj.invoice_file:
+        return format_html(
+            '<span style="color: #dc3545; font-weight: bold;">'
+            '{}</span>',
+            _("Unpaid"),
+        )
+    payment_status.short_description = _("Payment")
+
+    def rendered_link(self, obj):
+        if not obj.rendered_file:
             return "-"
         return format_html(
-            '<a href="{}" download style="font-size: 18px;">📄</a>',
-            obj.invoice_file.url
+            '<a href="{}" target="_blank">📄</a>',
+            obj.rendered_file.url,
         )
-    download_link.short_description = _("Download")
-    
-    def url_link(self, obj):
-        """Display URL link."""
-        if not obj.url:
+    rendered_link.short_description = _("PDF")
+
+    def rendered_preview(self, obj):
+        if not obj.rendered_file:
             return "-"
         return format_html(
-            '<a href="{}" target="_blank" style="font-size: 18px;">🔗</a>',
-            obj.url
+            '<a href="{}" target="_blank">{}</a>',
+            obj.rendered_file.url,
+            _("Open PDF"),
         )
-    url_link.short_description = _("URL")
-    
-    def file_preview(self, obj):
-        """Display file preview."""
-        if not obj.invoice_file:
-            return "-"
-        return format_html(
-            '<a href="{}" target="_blank" style="font-size: 18px;">📄 View PDF</a>',
-            obj.invoice_file.url
-        )
-    file_preview.short_description = _("File Preview")
-    
+    rendered_preview.short_description = _("Preview")
+
     def events_link(self, obj):
-        """Display link to events."""
-        try:
-            count = obj.events.count()
-            url = reverse("admin:invoice_invoiceevent_changelist") + f"?invoice__id__exact={obj.id}"
-            return format_html('<a href="{}">{} {}</a>', url, count, _("events"))
-        except (AttributeError, Exception):
-            return "-"
+        url = (
+            reverse("admin:invoice_invoiceevent_changelist")
+            + f"?invoice__id__exact={obj.id}"
+        )
+        return format_html(
+            '<a href="{}">{} ({})</a>',
+            url,
+            _("View events"),
+            obj.events.count(),
+        )
     events_link.short_description = _("Events")
-    
+
+    def shares_link(self, obj):
+        url = (
+            reverse("admin:invoice_invoiceshare_changelist")
+            + f"?invoice__id__exact={obj.id}"
+        )
+        return format_html(
+            '<a href="{}">{} ({})</a>',
+            url,
+            _("View shares"),
+            obj.shares.count(),
+        )
+    shares_link.short_description = _("Shares")
+
     def metadata_display(self, obj):
-        """Display metadata as formatted JSON."""
         if not obj.metadata:
             return "-"
         return format_html(
-            "<pre style='background: #f5f5f5; padding: 10px; border-radius: 4px;'>{}</pre>",
-            json.dumps(obj.metadata, indent=2, default=str)
+            "<pre style='background: #f5f5f5; padding: 10px; "
+            "border-radius: 4px;'>{}</pre>",
+            json.dumps(obj.metadata, indent=2, default=str),
         )
     metadata_display.short_description = _("Metadata")
-    
-    # =========================================================================
-    # Admin Actions
-    # =========================================================================
-    
-    def regenerate_invoices(self, request, queryset):
-        """Regenerate selected invoices."""
-        count = 0
+
+    # ------------------------------------------------------------------
+    # Actions
+    # ------------------------------------------------------------------
+
+    def action_mark_issued(self, request, queryset):
+        from .services import mark_issued
+
+        ok, skipped = 0, 0
         for invoice in queryset:
-            # Add your invoice regeneration logic here
-            # This could regenerate PDF, update totals, etc.
-            count += 1
+            try:
+                mark_issued(invoice, actor=request.user)
+                ok += 1
+            except Exception:
+                skipped += 1
+
         self.message_user(
             request,
-            _("Successfully regenerated {} invoice(s).").format(count)
+            _("Issued {ok} invoice(s); {skipped} skipped.").format(
+                ok=ok, skipped=skipped
+            ),
         )
-    regenerate_invoices.short_description = _("Regenerate selected invoices")
-    
-    def mark_as_sent(self, request, queryset):
-        """Mark selected invoices as sent."""
-        count = 0
+    action_mark_issued.short_description = _("Mark selected as issued")
+
+    def action_mark_sent(self, request, queryset):
+        from .services import mark_sent
+
+        ok, skipped = 0, 0
         for invoice in queryset:
-            if invoice.status == 'DRAFT':
-                invoice.mark_as_sent(sent_by=request.user)
-                count += 1
+            try:
+                mark_sent(invoice, actor=request.user)
+                ok += 1
+            except Exception:
+                skipped += 1
+
         self.message_user(
             request,
-            _("Successfully marked {} invoice(s) as sent.").format(count)
+            _("Marked {ok} invoice(s) as sent; {skipped} skipped.").format(
+                ok=ok, skipped=skipped
+            ),
         )
-    mark_as_sent.short_description = _("Mark selected as sent")
-    
-    def mark_as_paid(self, request, queryset):
-        """Mark selected invoices as paid."""
-        count = 0
+    action_mark_sent.short_description = _("Mark selected as sent")
+
+    def action_mark_overdue(self, request, queryset):
+        from .services import mark_overdue
+
+        ok, skipped = 0, 0
         for invoice in queryset:
-            if invoice.status in ['SENT', 'OVERDUE']:
-                invoice.mark_as_paid(verified_by=request.user)
-                count += 1
+            try:
+                mark_overdue(invoice, actor=request.user)
+                ok += 1
+            except Exception:
+                skipped += 1
+
         self.message_user(
             request,
-            _("Successfully marked {} invoice(s) as paid.").format(count)
+            _("Marked {ok} invoice(s) overdue; {skipped} skipped.").format(
+                ok=ok, skipped=skipped
+            ),
         )
-    mark_as_paid.short_description = _("Mark selected as paid")
-    
-    def mark_as_overdue(self, request, queryset):
-        """Mark selected invoices as overdue."""
-        count = 0
+    action_mark_overdue.short_description = _("Mark selected as overdue")
+
+    def action_render_pdf(self, request, queryset):
+        from .services import RenderBackendUnavailable, render_and_attach
+
+        ok, failed = 0, 0
         for invoice in queryset:
-            if invoice.status == 'SENT':
-                invoice.mark_as_overdue()
-                count += 1
+            try:
+                render_and_attach(invoice, actor=request.user)
+                ok += 1
+            except RenderBackendUnavailable:
+                failed += 1
+            except Exception:
+                failed += 1
+
         self.message_user(
             request,
-            _("Successfully marked {} invoice(s) as overdue.").format(count)
+            _("Rendered {ok} invoice(s); {failed} failed.").format(
+                ok=ok, failed=failed
+            ),
         )
-    mark_as_overdue.short_description = _("Mark selected as overdue")
+    action_render_pdf.short_description = _("Render selected to PDF")
+
+
+# =====================================================================
+# INVOICE LINE ITEM
+# =====================================================================
 
 
 @admin.register(InvoiceLineItem)
 class InvoiceLineItemAdmin(admin.ModelAdmin):
-    """Admin interface for InvoiceLineItem model."""
-    
     list_display = (
-        'id',
-        'invoice_link',
-        'description',
-        'quantity',
-        'unit_price',
-        'total',
-        'created_at',
+        "id",
+        "invoice_link",
+        "description",
+        "quantity",
+        "unit_price",
+        "line_total",
+        "currency",
     )
-    
     list_filter = (
-        'created_at',
-        ('invoice', admin.RelatedOnlyFieldListFilter),
+        "currency",
+        ("invoice", admin.RelatedOnlyFieldListFilter),
     )
-    
     search_fields = (
-        'description',
-        'sku',
-        'invoice__number',
-        'invoice__invoice_number',
+        "description",
+        "invoice__number",
     )
-    
-    raw_id_fields = ('invoice',)
-    
-    readonly_fields = ('total', 'created_at', 'updated_at')
-    
-    def invoice_link(self, obj):
-        """Display invoice with link."""
-        url = reverse("admin:invoice_invoice_change", args=(obj.invoice.id,))
-        number = obj.invoice.number or obj.invoice.invoice_number or f"INV-{obj.invoice.id}"
-        return format_html('<a href="{}">{}</a>', url, number)
-    invoice_link.short_description = _("Invoice")
-    
+    raw_id_fields = ("invoice",)
+    readonly_fields = ("line_total", "created_at", "updated_at")
+
     fieldsets = (
-        ('Line Item Information', {
-            'fields': (
-                'invoice',
-                'description',
-                'sku',
-                'quantity',
-                'unit_price',
-            )
-        }),
-        ('Tax & Discount', {
-            'fields': (
-                'discount',
-                'tax',
-                'tax_rate',
-                'total',
-            )
-        }),
-        ('Audit', {
-            'fields': (
-                'created_at',
-                'updated_at',
-                'metadata',
-            ),
-            'classes': ('collapse',)
-        }),
+        (
+            _("Line"),
+            {
+                "fields": (
+                    "invoice",
+                    "description",
+                    "quantity",
+                    "unit_price",
+                    "currency",
+                )
+            },
+        ),
+        (
+            _("Tax and discount"),
+            {
+                "fields": (
+                    "discount_amount",
+                    "tax_rate",
+                    "tax_amount",
+                    "line_total",
+                )
+            },
+        ),
+        (
+            _("Metadata"),
+            {
+                "fields": ("metadata",),
+                "classes": ("collapse",),
+            },
+        ),
+        (
+            _("Audit"),
+            {
+                "fields": ("created_at", "updated_at"),
+                "classes": ("collapse",),
+            },
+        ),
     )
+
+    def invoice_link(self, obj):
+        url = reverse(
+            "admin:invoice_invoice_change",
+            args=(obj.invoice_id,),
+        )
+        return format_html('<a href="{}">{}</a>', url, obj.invoice.number)
+    invoice_link.short_description = _("Invoice")
+    invoice_link.admin_order_field = "invoice__number"
+
+
+# =====================================================================
+# INVOICE PAYMENT
+# =====================================================================
 
 
 @admin.register(InvoicePayment)
 class InvoicePaymentAdmin(admin.ModelAdmin):
-    """Admin interface for InvoicePayment model."""
-    
     list_display = (
-        'id',
-        'invoice_link',
-        'amount',
-        'payment_method',
-        'payment_reference',
-        'status_badge',
-        'payment_date',
-        'transaction_id',
+        "id",
+        "invoice_link",
+        "amount",
+        "currency",
+        "payment_type",
+        "payment_id",
+        "applied_at",
+        "applied_by",
     )
-    
     list_filter = (
-        'status',
-        'payment_method',
-        'payment_date',
-        ('invoice', admin.RelatedOnlyFieldListFilter),
+        "payment_type",
+        "currency",
+        "applied_at",
     )
-    
     search_fields = (
-        'payment_reference',
-        'transaction_id',
-        'invoice__number',
-        'invoice__invoice_number',
-        'invoice__customer__email',
+        "idempotency_key",
+        "payment_id",
+        "invoice__number",
+        "invoice__recipient__name",
+        "invoice__recipient__email",
     )
-    
-    raw_id_fields = ('invoice', 'created_by', 'verified_by')
-    
-    readonly_fields = ('payment_date', 'created_at', 'updated_at')
-    
-    actions = ['mark_as_completed', 'mark_as_failed', 'mark_as_refunded']
-    
-    def invoice_link(self, obj):
-        """Display invoice with link."""
-        url = reverse("admin:invoice_invoice_change", args=(obj.invoice.id,))
-        number = obj.invoice.number or obj.invoice.invoice_number or f"INV-{obj.invoice.id}"
-        return format_html('<a href="{}">{}</a>', url, number)
-    invoice_link.short_description = _("Invoice")
-    
-    def status_badge(self, obj):
-        """Display status with color badge."""
-        status_colors = {
-            'PENDING': 'orange',
-            'PROCESSING': 'blue',
-            'COMPLETED': 'green',
-            'FAILED': 'red',
-            'REFUNDED': 'purple',
-            'PARTIAL': 'gold',
-        }
-        color = status_colors.get(obj.status, 'gray')
-        return format_html(
-            '<span style="display: inline-block; padding: 2px 8px; '
-            'background-color: {}; color: white; border-radius: 3px; '
-            'font-weight: bold;">{}</span>',
-            color,
-            obj.get_status_display().upper()
-        )
-    status_badge.short_description = _("Status")
-    status_badge.admin_order_field = 'status'
-    
+    raw_id_fields = ("invoice", "applied_by")
+    readonly_fields = (
+        "id",
+        "idempotency_key",
+        "payment_type",
+        "payment_id",
+        "amount",
+        "currency",
+        "applied_at",
+        "applied_by",
+        "created_at",
+        "metadata_display",
+    )
+
     fieldsets = (
-        ('Payment Information', {
-            'fields': (
-                'invoice',
-                'amount',
-                'payment_method',
-                'payment_reference',
-                'status_badge',
-            )
-        }),
-        ('Transaction Details', {
-            'fields': (
-                'transaction_id',
-                'gateway_response',
-                'metadata',
-            ),
-            'classes': ('collapse',)
-        }),
-        ('Audit', {
-            'fields': (
-                ('created_by', 'verified_by'),
-                ('payment_date', 'created_at', 'updated_at'),
-            ),
-            'classes': ('collapse',)
-        }),
+        (
+            _("Application"),
+            {
+                "fields": (
+                    "id",
+                    "invoice",
+                    ("amount", "currency"),
+                    ("payment_type", "payment_id"),
+                    "idempotency_key",
+                )
+            },
+        ),
+        (
+            _("Audit"),
+            {
+                "fields": (
+                    "applied_at",
+                    "applied_by",
+                    "created_at",
+                )
+            },
+        ),
+        (
+            _("Metadata"),
+            {
+                "fields": ("metadata_display",),
+                "classes": ("collapse",),
+            },
+        ),
     )
-    
-    def mark_as_completed(self, request, queryset):
-        """Mark selected payments as completed."""
-        count = 0
-        for payment in queryset:
-            if payment.status != 'COMPLETED':
-                payment.mark_as_completed(verified_by=request.user)
-                count += 1
+
+    # Payments are immutable once applied. Reversals are new rows.
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def invoice_link(self, obj):
+        url = reverse(
+            "admin:invoice_invoice_change",
+            args=(obj.invoice_id,),
+        )
+        return format_html('<a href="{}">{}</a>', url, obj.invoice.number)
+    invoice_link.short_description = _("Invoice")
+    invoice_link.admin_order_field = "invoice__number"
+
+    def metadata_display(self, obj):
+        if not obj.metadata:
+            return "-"
+        return format_html(
+            "<pre style='background: #f5f5f5; padding: 10px; "
+            "border-radius: 4px;'>{}</pre>",
+            json.dumps(obj.metadata, indent=2, default=str),
+        )
+    metadata_display.short_description = _("Metadata")
+
+
+# =====================================================================
+# INVOICE SOURCE
+# =====================================================================
+
+
+@admin.register(InvoiceSource)
+class InvoiceSourceAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "invoice_link",
+        "source_type",
+        "source_id",
+        "source_reference",
+        "created_at",
+    )
+    list_filter = ("source_type",)
+    search_fields = (
+        "source_id",
+        "source_reference",
+        "invoice__number",
+    )
+    raw_id_fields = ("invoice",)
+    readonly_fields = (
+        "invoice",
+        "source_type",
+        "source_id",
+        "source_reference",
+        "created_at",
+    )
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def invoice_link(self, obj):
+        url = reverse(
+            "admin:invoice_invoice_change",
+            args=(obj.invoice_id,),
+        )
+        return format_html('<a href="{}">{}</a>', url, obj.invoice.number)
+    invoice_link.short_description = _("Invoice")
+    invoice_link.admin_order_field = "invoice__number"
+
+
+# =====================================================================
+# INVOICE EVENT
+# =====================================================================
+
+
+@admin.register(InvoiceEvent)
+class InvoiceEventAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "invoice_link",
+        "type",
+        "occurred_at",
+        "actor",
+    )
+    list_filter = (
+        "type",
+        "occurred_at",
+    )
+    search_fields = (
+        "invoice__number",
+        "actor__email",
+    )
+    raw_id_fields = ("invoice", "actor")
+    readonly_fields = (
+        "invoice",
+        "type",
+        "occurred_at",
+        "actor",
+        "parameters_display",
+    )
+
+    # Events are append-only.
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def invoice_link(self, obj):
+        url = reverse(
+            "admin:invoice_invoice_change",
+            args=(obj.invoice_id,),
+        )
+        return format_html('<a href="{}">{}</a>', url, obj.invoice.number)
+    invoice_link.short_description = _("Invoice")
+    invoice_link.admin_order_field = "invoice__number"
+
+    def parameters_display(self, obj):
+        if not obj.parameters:
+            return "-"
+        return format_html(
+            "<pre style='background: #f5f5f5; padding: 10px; "
+            "border-radius: 4px;'>{}</pre>",
+            json.dumps(obj.parameters, indent=2, default=str),
+        )
+    parameters_display.short_description = _("Parameters")
+
+
+# =====================================================================
+# INVOICE SHARE
+# =====================================================================
+
+
+@admin.register(InvoiceShare)
+class InvoiceShareAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "invoice_link",
+        "label",
+        "channel",
+        "created_by",
+        "expires_at",
+        "state_badge",
+        "view_count",
+    )
+    list_filter = (
+        "channel",
+        "include_line_items",
+        "expires_at",
+    )
+    search_fields = (
+        "token",
+        "label",
+        "recipient_email",
+        "recipient_phone",
+        "invoice__number",
+    )
+    raw_id_fields = (
+        "invoice",
+        "created_by",
+        "revoked_by",
+    )
+    readonly_fields = (
+        "id",
+        "token",
+        "invoice",
+        "created_by",
+        "first_viewed_at",
+        "last_viewed_at",
+        "view_count",
+        "created_at",
+        "updated_at",
+        "revoked_at",
+        "revoked_by",
+    )
+
+    fieldsets = (
+        (
+            _("Share"),
+            {
+                "fields": (
+                    "id",
+                    "token",
+                    "invoice",
+                    "created_by",
+                    "label",
+                )
+            },
+        ),
+        (
+            _("Delivery"),
+            {
+                "fields": (
+                    "channel",
+                    "recipient_email",
+                    "recipient_phone",
+                    "include_line_items",
+                )
+            },
+        ),
+        (
+            _("Lifetime"),
+            {
+                "fields": (
+                    "expires_at",
+                    "revoked_at",
+                    "revoked_by",
+                    "revoked_reason",
+                )
+            },
+        ),
+        (
+            _("Usage"),
+            {
+                "fields": (
+                    "first_viewed_at",
+                    "last_viewed_at",
+                    "view_count",
+                )
+            },
+        ),
+        (
+            _("Audit"),
+            {
+                "fields": ("created_at", "updated_at"),
+                "classes": ("collapse",),
+            },
+        ),
+    )
+
+    actions = ["action_revoke"]
+
+    def invoice_link(self, obj):
+        url = reverse(
+            "admin:invoice_invoice_change",
+            args=(obj.invoice_id,),
+        )
+        return format_html('<a href="{}">{}</a>', url, obj.invoice.number)
+    invoice_link.short_description = _("Invoice")
+    invoice_link.admin_order_field = "invoice__number"
+
+    def state_badge(self, obj):
+        if obj.is_revoked:
+            return format_html(
+                '<span style="color: #6c757d; font-weight: bold;">'
+                '{}</span>',
+                _("Revoked"),
+            )
+        if obj.is_expired:
+            return format_html(
+                '<span style="color: #dc3545; font-weight: bold;">'
+                '{}</span>',
+                _("Expired"),
+            )
+        return format_html(
+            '<span style="color: #28a745; font-weight: bold;">'
+            '{}</span>',
+            _("Active"),
+        )
+    state_badge.short_description = _("State")
+
+    def action_revoke(self, request, queryset):
+        from .services import revoke_share
+
+        ok, skipped = 0, 0
+        for share in queryset:
+            try:
+                revoke_share(
+                    share_id=share.pk,
+                    by=request.user,
+                    reason="Revoked from admin",
+                )
+                ok += 1
+            except Exception:
+                skipped += 1
+
         self.message_user(
             request,
-            _("Successfully marked {} payment(s) as completed.").format(count)
+            _("Revoked {ok} share(s); {skipped} skipped.").format(
+                ok=ok, skipped=skipped
+            ),
         )
-    mark_as_completed.short_description = _("Mark selected as completed")
-    
-    def mark_as_failed(self, request, queryset):
-        """Mark selected payments as failed."""
-        count = 0
-        for payment in queryset:
-            if payment.status != 'FAILED':
-                payment.mark_as_failed()
-                count += 1
-        self.message_user(
-            request,
-            _("Successfully marked {} payment(s) as failed.").format(count)
-        )
-    mark_as_failed.short_description = _("Mark selected as failed")
-    
-    def mark_as_refunded(self, request, queryset):
-        """Mark selected payments as refunded."""
-        count = 0
-        for payment in queryset:
-            if payment.status == 'COMPLETED':
-                payment.mark_as_refunded()
-                count += 1
-        self.message_user(
-            request,
-            _("Successfully marked {} payment(s) as refunded.").format(count)
-        )
-    mark_as_refunded.short_description = _("Mark selected as refunded")
+    action_revoke.short_description = _("Revoke selected shares")

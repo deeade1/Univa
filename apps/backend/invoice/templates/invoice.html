@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Invoice {{ invoice.number }}</title>
+    <style>
+        body { font-family: sans-serif; color: #222; max-width: 800px; margin: 0 auto; padding: 2rem; }
+        header { display: flex; justify-content: space-between; border-bottom: 2px solid #222; padding-bottom: 1rem; margin-bottom: 2rem; }
+        .parties { display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; margin-bottom: 2rem; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 1rem; }
+        th, td { text-align: left; padding: 0.5rem; border-bottom: 1px solid #ddd; }
+        .totals { text-align: right; }
+        .totals div { padding: 0.25rem 0; }
+        .totals .total { font-weight: bold; border-top: 2px solid #222; padding-top: 0.5rem; }
+        .badge { display: inline-block; padding: 0.25rem 0.5rem; border-radius: 4px; background: #eee; font-size: 0.85rem; }
+    </style>
+</head>
+<body>
+    <header>
+        <div>
+            <h1>Invoice {{ invoice.number }}</h1>
+            <span class="badge">{{ invoice.get_status_display }}</span>
+        </div>
+        <div style="text-align: right;">
+            <div>Issued: {{ invoice.issue_date }}</div>
+            {% if invoice.due_date %}<div>Due: {{ invoice.due_date }}</div>{% endif %}
+        </div>
+    </header>
+
+    <section class="parties">
+        <div>
+            <h3>From</h3>
+            <div>{{ issuer.name }}</div>
+            {% if issuer.tax_id %}<div>Tax ID: {{ issuer.tax_id }}</div>{% endif %}
+            <div>{{ issuer.billing_address }}</div>
+            <div>{{ issuer.billing_city }}, {{ issuer.billing_state }} {{ issuer.billing_zip }}</div>
+            <div>{{ issuer.billing_country }}</div>
+        </div>
+        <div>
+            <h3>To</h3>
+            <div>{{ recipient.name }}</div>
+            {% if recipient.tax_id %}<div>Tax ID: {{ recipient.tax_id }}</div>{% endif %}
+            <div>{{ recipient.billing_address }}</div>
+            <div>{{ recipient.billing_city }}, {{ recipient.billing_state }} {{ recipient.billing_zip }}</div>
+            <div>{{ recipient.billing_country }}</div>
+        </div>
+    </section>
+
+    <table>
+        <thead>
+            <tr>
+                <th>Description</th>
+                <th>Qty</th>
+                <th>Unit price</th>
+                <th>Discount</th>
+                <th>Tax</th>
+                <th>Line total</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in line_items %}
+            <tr>
+                <td>{{ item.description }}</td>
+                <td>{{ item.quantity }}</td>
+                <td>{{ invoice.currency }} {{ item.unit_price }}</td>
+                <td>{{ invoice.currency }} {{ item.discount_amount }}</td>
+                <td>{{ invoice.currency }} {{ item.tax_amount }}</td>
+                <td>{{ invoice.currency }} {{ item.line_total }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <section class="totals">
+        <div>Subtotal: {{ invoice.currency }} {{ invoice.subtotal_amount }}</div>
+        <div>Tax: {{ invoice.currency }} {{ invoice.tax_amount }}</div>
+        <div>Shipping: {{ invoice.currency }} {{ invoice.shipping_amount }}</div>
+        <div>Discount: −{{ invoice.currency }} {{ invoice.discount_amount }}</div>
+        <div class="total">Total: {{ invoice.currency }} {{ invoice.total_amount }}</div>
+        {% if invoice.amount_paid > 0 %}
+        <div>Paid: {{ invoice.currency }} {{ invoice.amount_paid }}</div>
+        <div class="total">Balance due: {{ invoice.currency }} {{ invoice.balance_due }}</div>
+        {% endif %}
+    </section>
+
+    {% if invoice.notes %}
+    <section>
+        <h3>Notes</h3>
+        <p>{{ invoice.notes }}</p>
+    </section>
+    {% endif %}
+
+    {% if invoice.terms_and_conditions %}
+    <section>
+        <h3>Terms</h3>
+        <p>{{ invoice.terms_and_conditions }}</p>
+    </section>
+    {% endif %}
+</body>
+</html>

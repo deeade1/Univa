@@ -1,4 +1,4 @@
-# apps/backend/realestate/models/constants.py
+# apps/backend/realestate/constants.py
 
 """
 Constants for real estate models.

@@ -2,8 +2,7 @@
 Root GraphQL schema for Univa.
 
 Architecture
-------------
-
+-----------
 The root schema is responsible only for composing domain-level
 GraphQL query, mutation, and subscription objects.
 
@@ -57,7 +56,7 @@ except ImportError:
 # Accounts
 # ============================================================================
 from graphq.accounts.mutations.account import AccountMutations
-from graphq.accounts.schema import AccountsQuery
+from graphq.accounts.schema import AccountsQueries
 from graphq.accounts.subscriptions import AccountSubscriptions
 
 
@@ -98,8 +97,6 @@ from graphq.chat.subscription import ChatSubscriptions
 
 
 # Payments
-from graphq.payment.mutations import PaymentMutations
-from graphq.payment.schema import PaymentQueries
 
 
 # Real Estate
@@ -107,6 +104,8 @@ from graphq.realestate.mutations.realestate_mutations import RealEstateMutations
 from graphq.realestate.schema import RealestateQueries
 from graphq.realestate.subscriptions import RealEstateSubscriptions
 
+from graphq.payment.canonical.queries import PaymentQueries
+from graphq.payment.canonical.mutations import PaymentMutations
 
 # Social
 from graphq.social.mutations import SocialMutations
@@ -127,6 +126,12 @@ from graphq.transport.schema import TransportQuery
 # Staff
 from graphq.staff.schema import StaffQuery
 from graphq.staff.schema import StaffMutation
+
+from graphq.investors.queries import InvestorQueries
+from graphq.investors.mutations import InvestorMutations
+from graphq.investors.subscriptions import InvestorSubscriptions
+
+
 # ============================================================================
 # Core
 # ============================================================================
@@ -146,7 +151,7 @@ class Query(
     # ------------------------------------------------------------------
     # Accounts
     # ------------------------------------------------------------------
-    AccountsQuery,
+    AccountsQueries,
 
     # ------------------------------------------------------------------
     # E-Commerce
@@ -162,12 +167,12 @@ class Query(
     ChatQueries,
     SocialQueries,
     #InvoiceQuery,
-    PaymentQueries,
     RealestateQueries,
+    PaymentQueries,
     TransportQuery,
     TaxQueries,
     StaffQuery,
-    
+    InvestorQueries,
     BiometricsQueries,
     # ------------------------------------------------------------------
     # Core
@@ -217,6 +222,7 @@ class Mutation(
     BankingMutations,
     BlogMutations,
     ChatMutations,
+    InvestorMutations,
     SocialMutations,
     #InvoiceMutations,
     PaymentMutations,
@@ -261,6 +267,7 @@ class Subscription(
     ChatSubscriptions,
     SocialSubscriptions,
     RealEstateSubscriptions,
+    InvestorSubscriptions,
     #TransportSubscriptions,
 
     # ------------------------------------------------------------------

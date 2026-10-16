@@ -6,7 +6,8 @@ from uuid import UUID
 
 from graphql import GraphQLError
 
-from ecommerce.services.checkout.error_codes import CheckoutErrorCode
+
+from ecommerce.models.enums.errors import CheckoutErrorCode
 
 if TYPE_CHECKING:
     from checkout.models import CheckoutLine

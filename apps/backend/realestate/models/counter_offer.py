@@ -6,7 +6,7 @@ Counter Offer model for real estate.
 """
 
 from decimal import Decimal
-
+from django.db.models import F
 from django.conf import settings
 from django.core.validators import MinValueValidator
 from django.db import models
@@ -35,6 +35,17 @@ class CounterOffer(models.Model):
             models.Index(fields=["original_offer", "created_at"], name="counter_offer_original_idx"),
             models.Index(fields=["status"], name="counter_offer_sta_idx"),
             models.Index(fields=["expiration_date"], name="counter_offer_expire_idx"),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    models.Q(expiration_date__isnull=True)
+                    | models.Q(
+                        expiration_date__gt=models.F("created_at")
+                    )
+                ),
+                name="counter_offer_expiration_after_creation",
+            ),
         ]
 
     def __str__(self):

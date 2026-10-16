@@ -1,10 +1,11 @@
-# apps/backend/graphq/biometrics/types.py
+# graphq/biometrics/types.py
 
 import graphene
 
 from graphene import Node
 from graphene_django.types import DjangoObjectType
 
+from graphq.core.types.scalars import JSONScalar
 from biometrics.models import (
     BiometricDevice,
     FaceEncoding,
@@ -14,6 +15,9 @@ from biometrics.models import (
 
 
 class FaceVerificationNode(DjangoObjectType):
+    # NOTE: FaceVerification has no `metadata` field.
+    # Nothing to override here.
+
     class Meta:
         model = FaceVerification
         interfaces = (Node,)
@@ -21,6 +25,8 @@ class FaceVerificationNode(DjangoObjectType):
 
 
 class FaceEncodingNode(DjangoObjectType):
+    metadata = JSONScalar()
+
     class Meta:
         model = FaceEncoding
         interfaces = (Node,)
@@ -30,13 +36,15 @@ class FaceEncodingNode(DjangoObjectType):
             "version",
             "is_active",
             "source_image",
-            "metadata",
+            # "metadata" declared explicitly above
             "created_at",
             "updated_at",
         )
 
 
 class FaceVerificationImageNode(DjangoObjectType):
+    metadata = JSONScalar()
+
     class Meta:
         model = FaceVerificationImage
         interfaces = (Node,)
@@ -44,17 +52,15 @@ class FaceVerificationImageNode(DjangoObjectType):
 
 
 class BiometricDeviceNode(DjangoObjectType):
-    """
-    GraphQL representation of a trusted biometric device.
-    """
+    """GraphQL representation of a trusted biometric device."""
 
     device_name = graphene.String()
     user_email = graphene.String()
+    metadata = JSONScalar()
 
     class Meta:
         model = BiometricDevice
         interfaces = (Node,)
-
         fields = [
             "id",
             "user",
@@ -70,8 +76,4 @@ class BiometricDeviceNode(DjangoObjectType):
         return self.device_info
 
     def resolve_user_email(self, info):
-        return getattr(
-            self.user,
-            "email",
-            None,
-        )
+        return getattr(self.user, "email", None)

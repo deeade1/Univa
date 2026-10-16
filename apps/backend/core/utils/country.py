@@ -1,7 +1,7 @@
 from typing import TYPE_CHECKING, Optional
 
 from accounts.models import Address
-from channel.models import Channel
+from ecommerce.models.channel import Channel
 
 if TYPE_CHECKING:
     from graphq.accounts.types import AddressNode

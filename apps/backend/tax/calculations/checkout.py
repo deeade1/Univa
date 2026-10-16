@@ -3,10 +3,10 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Optional
 
 from django.conf import settings
-from prices import TaxedMoney
+from core.pricing import TaxedMoney
 
 from checkout import base_calculations
-from core.prices import quantize_price
+from core.pricing import quantize_price
 from core.taxes import zero_taxed_money
 from core.utils.country import get_active_country
 

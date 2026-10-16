@@ -80,7 +80,9 @@ PASSWORD_HASHERS = [
     "django.contrib.auth.hashers.MD5PasswordHasher",
 ]
 
+ENABLE_STUB_PROVIDER = False   # or True for tests only
 
+EMAIL_BACKEND = "django.core.mail.backends.locmem.EmailBackend"
 # ============================================================================
 # TEST DIAGNOSTICS
 # ============================================================================

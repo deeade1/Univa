@@ -228,7 +228,9 @@ class Listing(TimeStampedModel, LocationModel):
     # Land Details
     # ------------------------------------------------------------------
 
-    land_size = models.FloatField(
+    land_size = models.DecimalField(
+        max_digits=15,
+        decimal_places=3,
         null=True,
         blank=True,
         validators=[
@@ -275,7 +277,9 @@ class Listing(TimeStampedModel, LocationModel):
         default=0,
     )
 
-    square_feet = models.FloatField(
+    square_feet = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
         null=True,
         blank=True,
         validators=[
@@ -283,7 +287,9 @@ class Listing(TimeStampedModel, LocationModel):
         ],
     )
 
-    ceiling_height = models.FloatField(
+    ceiling_height = models.DecimalField(
+        max_digits=6,
+        decimal_places=2,
         blank=True,
         null=True,
         validators=[
@@ -335,7 +341,9 @@ class Listing(TimeStampedModel, LocationModel):
     # Additional Property Information
     # ------------------------------------------------------------------
 
-    lot_size = models.FloatField(
+    lot_size = models.DecimalField(
+        max_digits=15,
+        decimal_places=3,
         null=True,
         blank=True,
         validators=[
@@ -549,6 +557,17 @@ class Listing(TimeStampedModel, LocationModel):
                 name="listing_condition_idx",
             ),
         ]
+        
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    Q(plots_available__isnull=True)
+                    | Q(total_plots__isnull=True)
+                    | Q(plots_available__lte=F("total_plots"))
+                ),
+                name="listing_plots_available_lte_total",
+            ),
+        ]
 
     # ------------------------------------------------------------------
     # String Representation
@@ -618,6 +637,18 @@ class Listing(TimeStampedModel, LocationModel):
     # ------------------------------------------------------------------
 
     def save(self, *args, **kwargs):
+        """
+        Save the listing.
+
+        Computes `price_per_plot` for plot-sale listings that
+        have a price and total plot count.
+
+        Note: `self.clean()` runs to enforce cross-field
+        invariants (land_size required for land types, etc.).
+        `self.full_clean()` is deliberately NOT called — DB
+        constraints catch what they can, and callers see
+        IntegrityError rather than ValidationError for those.
+        """
         if (
             self.listing_type
             and self.listing_type.supports_plot_sales
@@ -629,7 +660,8 @@ class Listing(TimeStampedModel, LocationModel):
                 self.price / self.total_plots
             )
 
-        self.full_clean()
+        self.clean()
+
         super().save(*args, **kwargs)
 
     # ------------------------------------------------------------------

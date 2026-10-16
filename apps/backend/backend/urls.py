@@ -12,7 +12,7 @@ from django.views.generic import TemplateView
 from .views import purchase_pdf_view
   # Remove (or leave if used elsewhere):
 # from graphene_django.views import GraphQLView
-
+from payment.canonical.views import paystack_webhook
 from backend.graphql_view import LoggingGraphQLView
 
 
@@ -25,7 +25,7 @@ urlpatterns = [
     #re_path(r'^graphql/?$', csrf_exempt(GraphQLView.as_view(graphiql=True))),
   
     re_path(r'^graphql/?$', csrf_exempt(LoggingGraphQLView.as_view(graphiql=True))),
-    
+    path("invoice/", include("invoice.urls")),
    
     # Ecommerce - Support both purchase_id and invoice_id
     path("receipts/pdf/purchase/<uuid:purchase_id>/", purchase_pdf_view, name="purchase-pdf"),
@@ -38,6 +38,12 @@ urlpatterns = [
     path('robots.txt', cache_page(86400)(TemplateView.as_view(
         template_name="robots.txt",
         content_type="text/plain"))),
+    
+    path(
+        "webhooks/paystack/",
+        paystack_webhook,
+        name="paystack-webhook",
+    ),
 ]
 
 # Serve media during development

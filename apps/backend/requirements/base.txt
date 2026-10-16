@@ -22,6 +22,7 @@ firebase-admin
 geopy
 graphene-django
 graphene-gis
+django-five-channels-graphql-ws
 gunicorn
 i18naddress
 numpy
@@ -38,5 +39,6 @@ twilio
 uvicorn
 qrcode[pil]
 whitenoise
+responses
 
 
